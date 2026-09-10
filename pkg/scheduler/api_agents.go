@@ -23,8 +23,13 @@ func (s *SchedulerServer) registerAgentRoutes(mux *http.ServeMux) {
 	s.registerMemoryRoutes(mux)
 }
 
+// handleListAgents answers the dashboard's home screen in one request.
+//
+// Each row carries the agent's schedule and its last run, because the question
+// the screen exists to answer - is anything broken - cannot be answered from
+// the agent rows alone, and asking per agent would be a request per row.
 func (s *SchedulerServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
-	agents, err := s.agents.List(r.Context(), model.OwnerUserID)
+	agents, err := s.agents.ListOverview(r.Context(), model.OwnerUserID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

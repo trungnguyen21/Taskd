@@ -12,6 +12,7 @@ import (
 
 	"github.com/JyotinderSingh/task-queue/pkg/clock"
 	"github.com/JyotinderSingh/task-queue/pkg/common"
+	"github.com/JyotinderSingh/task-queue/pkg/dashboard"
 	"github.com/JyotinderSingh/task-queue/pkg/db"
 	"github.com/JyotinderSingh/task-queue/pkg/model"
 	"github.com/JyotinderSingh/task-queue/pkg/secretbox"
@@ -101,6 +102,9 @@ func (s *SchedulerServer) Start() error {
 	// server can exist in a process - which the integration tests rely on.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	// The dashboard is served by this process, so one command brings up a
+	// working URL rather than a URL and a second container to point at it.
+	mux.Handle("/", dashboard.Handler())
 	s.registerAgentRoutes(mux)
 	s.registerScheduleRoutes(mux)
 	s.registerAuthRoutes(mux)

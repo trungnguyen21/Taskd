@@ -26,12 +26,57 @@ implementation order and progress against it.
       `secrets` table, envelope encryption, write-only key API, single-user login.
 - [ ] **7. Delivery + inbox + failure notification**
       Run output inbox, Telegram chunking, consecutive-failure alerting.
-- [ ] **8. Dashboard**
+- [x] **8. Dashboard**
       Five screens, dark-only, Helvetica, flat colours, served by the API service.
 - [ ] **9. Operations**
       Health endpoints, graceful shutdown, embedded tzdata, k8s manifests.
 
 ## Notes
+
+### Slice 8, decisions taken
+
+**No frontend toolchain.** The PRD requires the bundle to be served by the API
+service with no build step for the user. It is plain ES modules the browser
+loads directly, embedded with `go:embed`, which makes that literally true rather
+than "a build step someone else already ran". There is no npm, no package.json
+and nothing to install.
+
+**The implicit contract is made explicit.** The PRD names the browser/API
+boundary as the one most likely to cost debugging time, and requires either
+generated TypeScript or a single shared definition. `web/contract.json` is that
+definition. `TestContractMatchesGoStructs` fails the build when a Go struct's
+JSON tags drift from it, and `api.js` warns in the console when a response
+carries fields it does not describe. A renamed field is meant to fail loudly in
+both directions rather than surface as `undefined` in a screen.
+
+**The agents list answers the home screen in one request.** `GET /api/agents`
+returns each agent with its schedule and its last run. The screen exists to
+answer "is anything broken", which the agent rows alone cannot answer, and the
+N+1 this avoids is the same one that argued against GraphQL in the PRD.
+
+**The run screen polls rather than streaming.** The API contract reserves
+server-sent events for live-tailing a run, and that endpoint is not built yet.
+Until it is, the run screen re-reads the two endpoints that do exist every two
+seconds while a run is active and stops when it ends. Moving to SSE later
+changes one function in `screens/run.js`.
+
+**`TestWebSmoke` runs the JavaScript.** Node is a development convenience, not a
+product dependency: the test skips when node is absent, and nothing about an
+installation depends on it. It renders all five screens against payloads copied
+from the real handlers, which is what catches a screen reading a field the API
+does not send.
+
+**Settings writes credentials the rest of the system does not read yet.** Tool
+credentials still come from the operator's environment (`tools.ConfigFromEnv`).
+The settings screen stores them under the names slice 7 will look for, so setup
+finishes in one place, but until slice 7 reads from the secret store, a key
+entered there does not register a tool. The screen lists what the installation
+actually offers next to the form, so it does not claim otherwise.
+
+**Not built here, because they are other slices.** Telegram chat-id discovery
+(user story 44) and the unread marker on run output (49) are slice 7 - their
+endpoints do not exist. Cancelling a run in progress needs the coordinator's
+gRPC path and is not in this slice either.
 
 - Legacy `tasks` table and the `/schedule` endpoint stay until slice 3 retires them,
   so the inherited integration tests keep passing meanwhile.
