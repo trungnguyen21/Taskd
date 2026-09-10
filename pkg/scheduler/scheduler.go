@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/JyotinderSingh/task-queue/pkg/clock"
 	"github.com/JyotinderSingh/task-queue/pkg/common"
 	"github.com/JyotinderSingh/task-queue/pkg/db"
 	"github.com/JyotinderSingh/task-queue/pkg/store"
@@ -40,6 +41,9 @@ type SchedulerServer struct {
 	dbConnectionString string
 	dbPool             *pgxpool.Pool
 	agents             *store.AgentStore
+	schedules          *store.ScheduleStore
+	runs               *store.RunStore
+	clock              clock.Clock
 	ctx                context.Context
 	cancel             context.CancelFunc
 	httpServer         *http.Server
@@ -47,10 +51,17 @@ type SchedulerServer struct {
 
 // NewServer creates and returns a new SchedulerServer.
 func NewServer(port string, dbConnectionString string) *SchedulerServer {
+	return NewServerWithClock(port, dbConnectionString, clock.Real{})
+}
+
+// NewServerWithClock is used by tests, which drive time by hand because
+// timezone and daylight-saving behaviour cannot be exercised in real time.
+func NewServerWithClock(port string, dbConnectionString string, clk clock.Clock) *SchedulerServer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &SchedulerServer{
 		serverPort:         port,
 		dbConnectionString: dbConnectionString,
+		clock:              clk,
 		ctx:                ctx,
 		cancel:             cancel,
 	}
@@ -68,6 +79,8 @@ func (s *SchedulerServer) Start() error {
 		return err
 	}
 	s.agents = store.NewAgentStore(s.dbPool)
+	s.schedules = store.NewScheduleStore(s.dbPool)
+	s.runs = store.NewRunStore(s.dbPool)
 
 	// A per-server mux rather than the default one, so that more than one
 	// server can exist in a process - which the integration tests rely on.
@@ -76,6 +89,7 @@ func (s *SchedulerServer) Start() error {
 	mux.HandleFunc("/status/", s.handleGetTaskStatus)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	s.registerAgentRoutes(mux)
+	s.registerScheduleRoutes(mux)
 
 	s.httpServer = &http.Server{
 		Addr:    s.serverPort,

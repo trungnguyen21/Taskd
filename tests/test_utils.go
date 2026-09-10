@@ -7,8 +7,12 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v4/pgxpool"
+
+	"github.com/JyotinderSingh/task-queue/pkg/clock"
 	"github.com/JyotinderSingh/task-queue/pkg/coordinator"
 	pb "github.com/JyotinderSingh/task-queue/pkg/grpcapi"
+	"github.com/JyotinderSingh/task-queue/pkg/materializer"
 	"github.com/JyotinderSingh/task-queue/pkg/scheduler"
 	"github.com/JyotinderSingh/task-queue/pkg/worker"
 	"github.com/testcontainers/testcontainers-go"
@@ -31,6 +35,8 @@ type Cluster struct {
 	workers            []*worker.WorkerServer
 	database           testcontainers.Container
 	databasePort       string
+	Clock              *clock.Fake
+	Materializer       *materializer.Materializer
 }
 
 func (c *Cluster) LaunchCluster(schedulerPort string, coordinatorPort string, numWorkers int8) {
@@ -93,8 +99,14 @@ func (c *Cluster) LaunchAPI(schedulerPort string) {
 // StartAPI starts an API service against the cluster's existing database. It is
 // separate from LaunchAPI so that a test can restart the service - which is how
 // migrations are exercised against a database that already has a schema.
+//
+// The service and the materializer share a clock the test drives by hand, so
+// schedule behaviour is exercised without waiting in real time.
 func (c *Cluster) StartAPI(schedulerPort string) {
-	c.scheduler = scheduler.NewServer(schedulerPort, c.dbConnectionString())
+	if c.Clock == nil {
+		c.Clock = clock.NewFake(time.Now())
+	}
+	c.scheduler = scheduler.NewServerWithClock(schedulerPort, c.dbConnectionString(), c.Clock)
 	startServer(c.scheduler)
 
 	if err := WaitForCondition(func() bool {
@@ -107,6 +119,12 @@ func (c *Cluster) StartAPI(schedulerPort string) {
 	}, 60*time.Second, 250*time.Millisecond); err != nil {
 		log.Fatalf("API service did not become healthy: %v", err)
 	}
+
+	pool, err := pgxpool.Connect(context.Background(), c.dbConnectionString())
+	if err != nil {
+		log.Fatalf("Could not connect to the test database: %v", err)
+	}
+	c.Materializer = materializer.New(pool, c.Clock)
 }
 
 // StopAPI stops the API service, leaving the database running.
@@ -210,4 +228,9 @@ func WaitForCondition(condition func() bool, timeout time.Duration, retryInterva
 			}
 		}
 	}
+}
+
+// clockAt builds a fake clock for a cluster that is about to be launched.
+func clockAt(t time.Time) *clock.Fake {
+	return clock.NewFake(t)
 }

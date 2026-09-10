@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	"github.com/JyotinderSingh/task-queue/pkg/model"
-	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 
@@ -101,7 +100,7 @@ func (s *AgentStore) Update(ctx context.Context, userID, id string, agent *model
 func (s *AgentStore) Delete(ctx context.Context, userID, id string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM agents WHERE id = $1 AND user_id = $2`, id, userID)
 	if err != nil {
-		return err
+		return translateNoRows(err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrNotFound
@@ -123,11 +122,8 @@ func scanAgent(row scanner) (*model.Agent, error) {
 		&agent.MaxSteps, &agent.MaxTokens, &agent.MaxDurationSeconds,
 		&agent.ContextMode, &agent.ContextRuns, &agent.Enabled,
 		&agent.CreatedAt, &agent.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrNotFound
-	}
 	if err != nil {
-		return nil, err
+		return nil, translateNoRows(err)
 	}
 
 	if err := json.Unmarshal(tools, &agent.Tools); err != nil {

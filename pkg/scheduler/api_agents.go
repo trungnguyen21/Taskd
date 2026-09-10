@@ -116,7 +116,7 @@ func writeStoreError(w http.ResponseWriter, err error) bool {
 	case err == nil:
 		return false
 	case errors.Is(err, store.ErrNotFound):
-		writeError(w, http.StatusNotFound, "agent not found")
+		writeError(w, http.StatusNotFound, "not found")
 	default:
 		writeError(w, http.StatusInternalServerError, err.Error())
 	}

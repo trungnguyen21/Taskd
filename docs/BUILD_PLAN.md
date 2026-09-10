@@ -8,7 +8,7 @@ implementation order and progress against it.
 - [x] **1. Foundation: migrations + agents CRUD**
       Embedded SQL migrations applied on boot, `users` and `agents` tables,
       REST CRUD for agents, per-server HTTP mux.
-- [ ] **2. Schedules + materializer**
+- [x] **2. Schedules + materializer**
       `schedules` and `runs` tables, cron + IANA timezone, injectable clock,
       forward-only fire-time rule, DST behaviour, missed-run recording.
 - [ ] **3. Run dispatch + lease + reaper**
@@ -33,3 +33,20 @@ implementation order and progress against it.
 
 - Legacy `tasks` table and the `/schedule` endpoint stay until slice 3 retires them,
   so the inherited integration tests keep passing meanwhile.
+
+### Divergence from the PRD, slice 2
+
+The PRD says the autumn daylight-saving duplicate is resolved by requiring each
+computed fire time to be strictly later than the last one. Implementing it showed
+that this is not sufficient, and the PRD is wrong on this point.
+
+On the autumn transition the same wall-clock time occurs at two different
+instants, and the second **is** strictly later than the first, so an
+ordering rule accepts both and the agent runs twice. What separates them is the
+wall-clock reading, not the ordering: the schedule stores the wall-clock form of
+its last fire and skips a candidate the user would read identically.
+
+`TestRepeatedAutumnHourWouldOtherwiseFireTwice` pins this - it asserts that the
+cron library really does produce the duplicate, so the guard cannot be removed
+as redundant. The forward-only rule is still applied; it is just not the part
+doing the work here.

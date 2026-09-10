@@ -19,7 +19,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v4/pgxpool"
 
+	"github.com/JyotinderSingh/task-queue/pkg/clock"
 	"github.com/JyotinderSingh/task-queue/pkg/common"
+	"github.com/JyotinderSingh/task-queue/pkg/materializer"
 )
 
 const (
@@ -42,6 +44,8 @@ type CoordinatorServer struct {
 	roundRobinIndex     uint32
 	dbConnectionString  string
 	dbPool              *pgxpool.Pool
+	clock               clock.Clock
+	materializer        *materializer.Materializer
 	ctx                 context.Context    // The root context for all goroutines
 	cancel              context.CancelFunc // Function to cancel the context
 	wg                  sync.WaitGroup     // WaitGroup to wait for all goroutines to finish
@@ -56,6 +60,11 @@ type workerInfo struct {
 
 // NewServer initializes and returns a new Server instance.
 func NewServer(port string, dbConnectionString string) *CoordinatorServer {
+	return NewServerWithClock(port, dbConnectionString, clock.Real{})
+}
+
+// NewServerWithClock is used by tests, which drive time by hand.
+func NewServerWithClock(port string, dbConnectionString string, clk clock.Clock) *CoordinatorServer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &CoordinatorServer{
 		WorkerPool:         make(map[uint32]*workerInfo),
@@ -63,6 +72,7 @@ func NewServer(port string, dbConnectionString string) *CoordinatorServer {
 		heartbeatInterval:  common.DefaultHeartbeat,
 		dbConnectionString: dbConnectionString,
 		serverPort:         port,
+		clock:              clk,
 		ctx:                ctx,
 		cancel:             cancel,
 	}
@@ -81,6 +91,7 @@ func (s *CoordinatorServer) Start() error {
 	if err != nil {
 		return err
 	}
+	s.materializer = materializer.New(s.dbPool, s.clock)
 
 	go s.scanDatabase()
 
@@ -259,6 +270,9 @@ func (s *CoordinatorServer) scanDatabase() {
 	for {
 		select {
 		case <-ticker.C:
+			// Schedules become runs before runs are dispatched, so a schedule
+			// due this tick is picked up on the same tick.
+			go s.materializeSchedules()
 			go s.executeAllScheduledTasks()
 		case <-s.ctx.Done():
 			log.Println("Shutting down database scanner.")
@@ -364,5 +378,20 @@ func (s *CoordinatorServer) removeInactiveWorkers() {
 		} else {
 			worker.heartbeatMisses++
 		}
+	}
+}
+
+// materializeSchedules expands due schedules into runs.
+func (s *CoordinatorServer) materializeSchedules() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	created, err := s.materializer.RunOnce(ctx)
+	if err != nil {
+		log.Printf("Failed to materialize schedules: %v", err)
+		return
+	}
+	if created > 0 {
+		log.Printf("Materialized %d run(s) from schedules", created)
 	}
 }
