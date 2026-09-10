@@ -28,6 +28,10 @@ services:
       TASKD_SEARCH_API_KEY: ${TASKD_SEARCH_API_KEY:-}
       TASKD_TELEGRAM_BOT_TOKEN: ${TASKD_TELEGRAM_BOT_TOKEN:-}
       TASKD_TELEGRAM_CHAT_ID: ${TASKD_TELEGRAM_CHAT_ID:-}
+      # Seals stored credentials. Generate with: openssl rand -base64 32
+      TASKD_SECRET_KEY: ${TASKD_SECRET_KEY}
+      # Sets the dashboard password on first start.
+      TASKD_PASSWORD: ${TASKD_PASSWORD}
     ports:
       - "8081:8081"
     depends_on:
@@ -67,6 +71,8 @@ services:
       TASKD_SEARCH_API_KEY: ${TASKD_SEARCH_API_KEY:-}
       TASKD_TELEGRAM_BOT_TOKEN: ${TASKD_TELEGRAM_BOT_TOKEN:-}
       TASKD_TELEGRAM_CHAT_ID: ${TASKD_TELEGRAM_CHAT_ID:-}
+      # Workers unseal the stored credential at the start of each run.
+      TASKD_SECRET_KEY: ${TASKD_SECRET_KEY}
     depends_on:
       - postgres
       - coordinator

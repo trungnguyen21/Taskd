@@ -50,6 +50,9 @@ const (
 	CeilingMaxDurationSeconds = 3600
 )
 
+// DefaultSecretName is the credential an agent uses unless it names another.
+const DefaultSecretName = "default"
+
 // OwnerUserID is the single user of a v1 install. Ownership is carried on every
 // table from the start so that multi-user support is not a schema migration.
 const OwnerUserID = "00000000-0000-0000-0000-000000000001"
@@ -57,22 +60,24 @@ const OwnerUserID = "00000000-0000-0000-0000-000000000001"
 // Agent is a scheduled unit of work: a model, a prompt, a set of granted tools
 // and the limits it runs under.
 type Agent struct {
-	ID                 string    `json:"id"`
-	Name               string    `json:"name"`
-	Description        string    `json:"description"`
-	Model              string    `json:"model"`
-	BaseURL            string    `json:"base_url"`
-	SystemPrompt       string    `json:"system_prompt"`
-	UserPrompt         string    `json:"user_prompt"`
-	Tools              []string  `json:"tools"`
-	MaxSteps           int       `json:"max_steps"`
-	MaxTokens          int       `json:"max_tokens"`
-	MaxDurationSeconds int       `json:"max_duration_seconds"`
-	ContextMode        string    `json:"context_mode"`
-	ContextRuns        int       `json:"context_runs"`
-	Enabled            bool      `json:"enabled"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                 string   `json:"id"`
+	Name               string   `json:"name"`
+	Description        string   `json:"description"`
+	Model              string   `json:"model"`
+	BaseURL            string   `json:"base_url"`
+	SystemPrompt       string   `json:"system_prompt"`
+	UserPrompt         string   `json:"user_prompt"`
+	Tools              []string `json:"tools"`
+	MaxSteps           int      `json:"max_steps"`
+	MaxTokens          int      `json:"max_tokens"`
+	MaxDurationSeconds int      `json:"max_duration_seconds"`
+	// SecretName is which stored credential this agent's model calls use.
+	SecretName  string    `json:"secret_name"`
+	ContextMode string    `json:"context_mode"`
+	ContextRuns int       `json:"context_runs"`
+	Enabled     bool      `json:"enabled"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // HasTool reports whether the agent was granted the named tool.
@@ -101,6 +106,9 @@ func (a *Agent) ApplyDefaults() {
 	}
 	if a.ContextMode == "" {
 		a.ContextMode = ContextFresh
+	}
+	if a.SecretName == "" {
+		a.SecretName = DefaultSecretName
 	}
 }
 

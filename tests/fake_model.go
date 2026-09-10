@@ -17,12 +17,13 @@ import (
 type fakeModel struct {
 	server *httptest.Server
 
-	mu        sync.Mutex
-	queued    []llm.Response
-	fallback  *llm.Response
-	failWith  int
-	requests  []llm.Request
-	callCount int
+	mu            sync.Mutex
+	queued        []llm.Response
+	fallback      *llm.Response
+	failWith      int
+	requests      []llm.Request
+	callCount     int
+	authorization string
 }
 
 func newFakeModel() *fakeModel {
@@ -83,6 +84,7 @@ func (f *fakeModel) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.requests = append(f.requests, request)
 	f.callCount++
+	f.authorization = r.Header.Get("Authorization")
 
 	if f.failWith != 0 {
 		status := f.failWith
@@ -134,4 +136,12 @@ func toolCallResponse(id, name, arguments string) llm.Response {
 		}},
 		Usage: llm.Usage{PromptTokens: 13, CompletionTokens: 5, TotalTokens: 18},
 	}
+}
+
+// authorizationSeen returns the credential the executor presented on the most
+// recent call.
+func (f *fakeModel) authorizationSeen() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.authorization
 }

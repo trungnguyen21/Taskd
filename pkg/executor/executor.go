@@ -5,6 +5,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -24,23 +25,49 @@ type Executor struct {
 	agents   *store.AgentStore
 	runs     *store.RunStore
 	steps    *store.StepStore
+	secrets  *store.SecretStore
 	registry *tools.Registry
 	clock    clock.Clock
-	// apiKey is the provider credential. It is supplied by the operator's
-	// environment until stored credentials land.
-	apiKey string
+	// fallbackAPIKey is used when an agent's named credential is not stored.
+	// It exists so a local development install works without configuring a
+	// credential first.
+	fallbackAPIKey string
 }
 
-func New(pool *pgxpool.Pool, registry *tools.Registry, clk clock.Clock, apiKey string) *Executor {
+func New(pool *pgxpool.Pool, secrets *store.SecretStore, registry *tools.Registry, clk clock.Clock, fallbackAPIKey string) *Executor {
 	return &Executor{
-		pool:     pool,
-		agents:   store.NewAgentStore(pool),
-		runs:     store.NewRunStore(pool),
-		steps:    store.NewStepStore(pool),
-		registry: registry,
-		clock:    clk,
-		apiKey:   apiKey,
+		pool:           pool,
+		agents:         store.NewAgentStore(pool),
+		runs:           store.NewRunStore(pool),
+		steps:          store.NewStepStore(pool),
+		secrets:        secrets,
+		registry:       registry,
+		clock:          clk,
+		fallbackAPIKey: fallbackAPIKey,
 	}
+}
+
+// credentialFor returns the provider key an agent's model calls use.
+//
+// The value is held for the duration of the run and never written to a step or
+// a log: a trace is meant to be readable, and a credential in it would travel
+// wherever the trace does.
+func (e *Executor) credentialFor(ctx context.Context, agent *model.Agent) (string, error) {
+	if e.secrets == nil {
+		return e.fallbackAPIKey, nil
+	}
+
+	value, err := e.secrets.Reveal(ctx, model.OwnerUserID, agent.SecretName)
+	if errors.Is(err, store.ErrNotFound) {
+		if e.fallbackAPIKey != "" {
+			return e.fallbackAPIKey, nil
+		}
+		return "", fmt.Errorf("no credential named %q is stored", agent.SecretName)
+	}
+	if err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 // Execute runs the agent's loop until it answers, or until a budget stops it.
@@ -65,7 +92,12 @@ func (e *Executor) Execute(ctx context.Context, runID, agentID string) (worker.R
 		return worker.Result{}, err
 	}
 
-	client := llm.New(agent.BaseURL, e.apiKey)
+	apiKey, err := e.credentialFor(ctx, agent)
+	if err != nil {
+		return worker.Result{}, err
+	}
+
+	client := llm.New(agent.BaseURL, apiKey)
 	definitions := e.registry.Definitions(agent.Tools)
 
 	deadline := e.clock.Now().Add(time.Duration(agent.MaxDurationSeconds) * time.Second)

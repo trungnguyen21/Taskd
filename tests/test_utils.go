@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -16,6 +18,8 @@ import (
 	"github.com/JyotinderSingh/task-queue/pkg/model"
 	"github.com/JyotinderSingh/task-queue/pkg/reaper"
 	"github.com/JyotinderSingh/task-queue/pkg/scheduler"
+	"github.com/JyotinderSingh/task-queue/pkg/secretbox"
+	"github.com/JyotinderSingh/task-queue/pkg/store"
 	"github.com/JyotinderSingh/task-queue/pkg/tools"
 	"github.com/JyotinderSingh/task-queue/pkg/worker"
 	"github.com/testcontainers/testcontainers-go"
@@ -23,6 +27,10 @@ import (
 )
 
 const (
+	// testPassword and testMasterKey stand in for what an operator sets.
+	testPassword  = "test-password"
+	testMasterKey = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+
 	postgresUser     = "postgres"
 	postgresPassword = "postgres"
 	postgresDb       = "scheduler"
@@ -49,6 +57,9 @@ type Cluster struct {
 	// DB is exposed so that a test can set up states the API cannot reach,
 	// such as a run abandoned by a worker that died.
 	DB *pgxpool.Pool
+	// Session is the cookie every API request carries, since the API is closed
+	// to anyone without one.
+	Session *http.Cookie
 }
 
 func (c *Cluster) LaunchCluster(schedulerPort string, coordinatorPort string, numWorkers int8) {
@@ -76,9 +87,15 @@ func (c *Cluster) LaunchCluster(schedulerPort string, coordinatorPort string, nu
 	config.AllowPrivateAddresses = true
 	registry := tools.BuildRegistry(c.DB, config)
 
+	sealer, err := secretbox.New(testMasterKey)
+	if err != nil {
+		log.Fatalf("Could not build the sealer: %v", err)
+	}
+	secrets := store.NewSecretStore(c.DB, sealer)
+
 	c.workers = make([]*worker.WorkerServer, numWorkers)
 	for i := 0; i < int(numWorkers); i++ {
-		agentExecutor := executor.New(c.DB, registry, c.Clock, "test-key")
+		agentExecutor := executor.New(c.DB, secrets, registry, c.Clock, "test-key")
 		c.workers[i] = worker.NewServerWithExecutor("", c.coordinatorAddress, agentExecutor)
 		startServer(c.workers[i])
 	}
@@ -142,6 +159,11 @@ func (c *Cluster) StartAPI(schedulerPort string) {
 	if c.Clock == nil {
 		c.Clock = clock.NewFake(time.Now())
 	}
+	// An installation refuses to start without a master key for stored
+	// credentials, and without a password it would be open to the network.
+	os.Setenv("TASKD_SECRET_KEY", testMasterKey)
+	os.Setenv("TASKD_PASSWORD", testPassword)
+
 	c.scheduler = scheduler.NewServerWithClock(schedulerPort, c.dbConnectionString(), c.Clock)
 	startServer(c.scheduler)
 
@@ -165,6 +187,30 @@ func (c *Cluster) StartAPI(schedulerPort string) {
 	}
 	c.Materializer = materializer.New(c.DB, c.Clock)
 	c.Reaper = reaper.New(c.DB, c.Clock)
+
+	c.signIn(schedulerPort)
+}
+
+// signIn logs the test in, the way the dashboard does.
+func (c *Cluster) signIn(schedulerPort string) {
+	body := strings.NewReader(`{"password":"` + testPassword + `"}`)
+	response, err := http.Post("http://localhost"+schedulerPort+"/api/login",
+		"application/json", body)
+	if err != nil {
+		log.Fatalf("Could not sign in: %v", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		log.Fatalf("Signing in returned %d", response.StatusCode)
+	}
+	for _, cookie := range response.Cookies() {
+		if cookie.Name == "taskd_session" {
+			c.Session = cookie
+			return
+		}
+	}
+	log.Fatal("Signing in returned no session cookie")
 }
 
 // StopAPI stops the API service, leaving the database running.

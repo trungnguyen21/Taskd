@@ -22,7 +22,7 @@ implementation order and progress against it.
       `memory_records` table. The MCP-shaped registry, `http_fetch` and the
       egress rules landed early in slice 4, because the loop needed a real
       tool to call.
-- [ ] **6. Secrets + auth**
+- [x] **6. Secrets + auth**
       `secrets` table, envelope encryption, write-only key API, single-user login.
 - [ ] **7. Delivery + inbox + failure notification**
       Run output inbox, Telegram chunking, consecutive-failure alerting.
