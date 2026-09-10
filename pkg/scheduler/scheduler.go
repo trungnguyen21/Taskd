@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/JyotinderSingh/task-queue/pkg/common"
+	"github.com/JyotinderSingh/task-queue/pkg/db"
+	"github.com/JyotinderSingh/task-queue/pkg/store"
 	"github.com/jackc/pgx/pgtype"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
@@ -37,6 +39,7 @@ type SchedulerServer struct {
 	serverPort         string
 	dbConnectionString string
 	dbPool             *pgxpool.Pool
+	agents             *store.AgentStore
 	ctx                context.Context
 	cancel             context.CancelFunc
 	httpServer         *http.Server
@@ -61,11 +64,22 @@ func (s *SchedulerServer) Start() error {
 		return err
 	}
 
-	http.HandleFunc("/schedule", s.handleScheduleTask)
-	http.HandleFunc("/status/", s.handleGetTaskStatus) // Add the new route handler
+	if err := db.Migrate(s.ctx, s.dbPool); err != nil {
+		return err
+	}
+	s.agents = store.NewAgentStore(s.dbPool)
+
+	// A per-server mux rather than the default one, so that more than one
+	// server can exist in a process - which the integration tests rely on.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/schedule", s.handleScheduleTask)
+	mux.HandleFunc("/status/", s.handleGetTaskStatus)
+	mux.HandleFunc("GET /healthz", s.handleHealth)
+	s.registerAgentRoutes(mux)
 
 	s.httpServer = &http.Server{
-		Addr: s.serverPort,
+		Addr:    s.serverPort,
+		Handler: mux,
 	}
 
 	log.Printf("Starting scheduler server on %s\n", s.serverPort)
@@ -253,4 +267,13 @@ func (s *SchedulerServer) Stop() error {
 	}
 	log.Println("Scheduler server and database pool stopped")
 	return nil
+}
+
+// handleHealth reports whether the server can reach its database.
+func (s *SchedulerServer) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if err := s.dbPool.Ping(r.Context()); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

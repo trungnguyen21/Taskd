@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/JyotinderSingh/task-queue/pkg/coordinator"
@@ -29,6 +30,7 @@ type Cluster struct {
 	coordinator        *coordinator.CoordinatorServer
 	workers            []*worker.WorkerServer
 	database           testcontainers.Container
+	databasePort       string
 }
 
 func (c *Cluster) LaunchCluster(schedulerPort string, coordinatorPort string, numWorkers int8) {
@@ -38,10 +40,10 @@ func (c *Cluster) LaunchCluster(schedulerPort string, coordinatorPort string, nu
 	}
 
 	c.coordinatorAddress = "localhost" + coordinatorPort
-	c.coordinator = coordinator.NewServer(coordinatorPort, getDbConnectionString())
+	c.coordinator = coordinator.NewServer(coordinatorPort, c.dbConnectionString())
 	startServer(c.coordinator)
 
-	c.scheduler = scheduler.NewServer(schedulerPort, getDbConnectionString())
+	c.scheduler = scheduler.NewServer(schedulerPort, c.dbConnectionString())
 	startServer(c.scheduler)
 
 	c.workers = make([]*worker.WorkerServer, numWorkers)
@@ -60,15 +62,61 @@ func (c *Cluster) StopCluster() {
 			log.Printf("Failed to stop worker: %v", err)
 		}
 	}
-	if err := c.coordinator.Stop(); err != nil {
-		log.Printf("Failed to stop coordinator: %v", err)
+	if c.coordinator != nil {
+		if err := c.coordinator.Stop(); err != nil {
+			log.Printf("Failed to stop coordinator: %v", err)
+		}
 	}
 
-	if err := c.scheduler.Stop(); err != nil {
-		log.Printf("Failed to stop scheduler: %v", err)
+	if c.scheduler != nil {
+		if err := c.scheduler.Stop(); err != nil {
+			log.Printf("Failed to stop scheduler: %v", err)
+		}
 	}
 
-	c.database.Terminate(context.Background())
+	if c.database != nil {
+		c.database.Terminate(context.Background())
+	}
+}
+
+// LaunchAPI starts a database and the API service alone. Tests that only drive
+// the dashboard-facing API do not need a coordinator or workers, and skipping
+// them keeps those tests fast.
+func (c *Cluster) LaunchAPI(schedulerPort string) {
+	if err := c.createDatabase(); err != nil {
+		log.Fatalf("Could not launch database container: %+v", err)
+	}
+
+	c.StartAPI(schedulerPort)
+}
+
+// StartAPI starts an API service against the cluster's existing database. It is
+// separate from LaunchAPI so that a test can restart the service - which is how
+// migrations are exercised against a database that already has a schema.
+func (c *Cluster) StartAPI(schedulerPort string) {
+	c.scheduler = scheduler.NewServer(schedulerPort, c.dbConnectionString())
+	startServer(c.scheduler)
+
+	if err := WaitForCondition(func() bool {
+		resp, err := http.Get("http://localhost" + schedulerPort + "/healthz")
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, 60*time.Second, 250*time.Millisecond); err != nil {
+		log.Fatalf("API service did not become healthy: %v", err)
+	}
+}
+
+// StopAPI stops the API service, leaving the database running.
+func (c *Cluster) StopAPI() {
+	if c.scheduler != nil {
+		if err := c.scheduler.Stop(); err != nil {
+			log.Printf("Failed to stop scheduler: %v", err)
+		}
+		c.scheduler = nil
+	}
 }
 
 func startServer(srv interface {
@@ -97,10 +145,9 @@ func (c *Cluster) waitForWorkers() {
 	}
 }
 
-func getDbConnectionString() string {
-	return fmt.Sprintf("postgres://%s:%s@%s:5432/%s",
-		postgresUser, postgresPassword, postgresHost, postgresDb)
-
+func (c *Cluster) dbConnectionString() string {
+	return fmt.Sprintf("postgres://%s:%s@%s:%s/%s",
+		postgresUser, postgresPassword, postgresHost, c.databasePort, postgresDb)
 }
 
 func (c *Cluster) createDatabase() error {
@@ -109,7 +156,7 @@ func (c *Cluster) createDatabase() error {
 	// Define the container request using your custom image
 	req := testcontainers.ContainerRequest{
 		Image:        "scheduler-postgres", // Use your custom image
-		ExposedPorts: []string{"5432:5432/tcp"},
+		ExposedPorts: []string{"5432/tcp"},
 		Env: map[string]string{
 			"POSTGRES_PASSWORD": postgresPassword,
 			"POSTGRES_USER":     postgresUser,
@@ -124,7 +171,18 @@ func (c *Cluster) createDatabase() error {
 		ContainerRequest: req,
 		Started:          true,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+
+	// The container gets a random host port, so that tests do not collide with
+	// anything already listening on 5432.
+	port, err := c.database.MappedPort(ctx, "5432")
+	if err != nil {
+		return err
+	}
+	c.databasePort = port.Port()
+	return nil
 }
 
 func CreateTestClient(coordinatorAddress string) (*grpc.ClientConn, pb.CoordinatorServiceClient) {
