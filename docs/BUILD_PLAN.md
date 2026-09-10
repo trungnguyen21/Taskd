@@ -17,7 +17,7 @@ implementation order and progress against it.
 - [x] **4. Executor**
       OpenAI-compatible tool-calling loop, `run_steps` persistence, budgets,
       malformed-tool-call tolerance, fake model server in tests.
-- [ ] **5. Tool registry**
+- [x] **5. Tool registry**
       memory_read/write, web_search, send_telegram, send_webhook;
       `memory_records` table. The MCP-shaped registry, `http_fetch` and the
       egress rules landed early in slice 4, because the loop needed a real
@@ -35,6 +35,18 @@ implementation order and progress against it.
 
 - Legacy `tasks` table and the `/schedule` endpoint stay until slice 3 retires them,
   so the inherited integration tests keep passing meanwhile.
+
+### Open question settled, slice 5
+
+The PRD left it open whether `web_search` ships with a default provider or
+requires the operator to bring a key. Settled: the tool is registered only when
+a key is configured, and `GET /api/tools` returns what is actually registered.
+A catalogue that lists a tool which fails the moment an agent calls it is worse
+than one that is honest about what an installation can do. The same rule
+applies to `send_telegram`, which needs a bot token and chat id.
+
+Brave's API shape is what the search tool speaks. Any provider that matches it
+works by pointing `TASKD_SEARCH_BASE_URL` elsewhere.
 
 ### Divergence from the PRD, slice 2
 

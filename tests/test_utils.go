@@ -13,6 +13,7 @@ import (
 	"github.com/JyotinderSingh/task-queue/pkg/coordinator"
 	"github.com/JyotinderSingh/task-queue/pkg/executor"
 	"github.com/JyotinderSingh/task-queue/pkg/materializer"
+	"github.com/JyotinderSingh/task-queue/pkg/model"
 	"github.com/JyotinderSingh/task-queue/pkg/reaper"
 	"github.com/JyotinderSingh/task-queue/pkg/scheduler"
 	"github.com/JyotinderSingh/task-queue/pkg/tools"
@@ -42,6 +43,9 @@ type Cluster struct {
 	// test has somewhere to talk to. Tests that script specific responses build
 	// their own and point an agent at it instead.
 	Model *fakeModel
+	// ToolConfig is applied when the cluster's workers are built, so a test can
+	// stand up fake Telegram and search endpoints.
+	ToolConfig tools.Config
 	// DB is exposed so that a test can set up states the API cannot reach,
 	// such as a run abandoned by a worker that died.
 	DB *pgxpool.Pool
@@ -65,10 +69,12 @@ func (c *Cluster) LaunchCluster(schedulerPort string, coordinatorPort string, nu
 
 	c.StartAPI(schedulerPort)
 
-	// Workers run the real executor. The only thing faked is the model
-	// endpoint, which an agent points at through its own base_url.
-	registry := tools.NewRegistry()
-	registry.Register(tools.NewHTTPFetch(true))
+	// Workers run the real executor and the real tool registry. What is faked
+	// are the endpoints those tools talk to, which are configuration rather
+	// than code.
+	config := c.ToolConfig
+	config.AllowPrivateAddresses = true
+	registry := tools.BuildRegistry(c.DB, config)
 
 	c.workers = make([]*worker.WorkerServer, numWorkers)
 	for i := 0; i < int(numWorkers); i++ {
@@ -270,3 +276,6 @@ func (c *Cluster) startDefaultModel() {
 	c.Model = newFakeModel()
 	c.Model.always(textResponse("done"))
 }
+
+// ownerUserID is the single user of a test install.
+const ownerUserID = model.OwnerUserID

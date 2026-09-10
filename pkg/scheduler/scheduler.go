@@ -13,6 +13,7 @@ import (
 	"github.com/JyotinderSingh/task-queue/pkg/common"
 	"github.com/JyotinderSingh/task-queue/pkg/db"
 	"github.com/JyotinderSingh/task-queue/pkg/store"
+	"github.com/JyotinderSingh/task-queue/pkg/tools"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 
@@ -25,6 +26,8 @@ type SchedulerServer struct {
 	schedules          *store.ScheduleStore
 	runs               *store.RunStore
 	steps              *store.StepStore
+	memory             *store.MemoryStore
+	registry           *tools.Registry
 	clock              clock.Clock
 	ctx                context.Context
 	cancel             context.CancelFunc
@@ -64,6 +67,8 @@ func (s *SchedulerServer) Start() error {
 	s.schedules = store.NewScheduleStore(s.dbPool)
 	s.runs = store.NewRunStore(s.dbPool)
 	s.steps = store.NewStepStore(s.dbPool)
+	s.memory = store.NewMemoryStore(s.dbPool)
+	s.registry = tools.BuildRegistry(s.dbPool, tools.ConfigFromEnv())
 
 	// A per-server mux rather than the default one, so that more than one
 	// server can exist in a process - which the integration tests rely on.

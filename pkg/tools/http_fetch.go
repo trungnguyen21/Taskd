@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -23,29 +21,27 @@ const maxFetchBytes = 100 * 1024
 // HTTPFetch reads a URL the agent names.
 type HTTPFetch struct {
 	client *http.Client
-	// allowPrivateAddresses opens up private ranges. Off by default, because a
-	// tool that fetches arbitrary URLs from inside the deployment is otherwise
-	// an SSRF engine pointed at its own network. Self-hosters who want an agent
-	// to reach something on their LAN turn it on deliberately.
-	allowPrivateAddresses bool
+	policy *addressPolicy
 }
 
 // NewHTTPFetch builds the tool. Private and link-local addresses are refused
 // unless the operator has allowed them.
 func NewHTTPFetch(allowPrivateAddresses bool) *HTTPFetch {
-	fetch := &HTTPFetch{allowPrivateAddresses: allowPrivateAddresses}
-	fetch.client = &http.Client{
-		Timeout: fetchTimeout,
-		// A redirect is another chance to reach somewhere internal, so every
-		// hop is checked rather than only the first.
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return fmt.Errorf("too many redirects")
-			}
-			return fetch.checkAddress(req.URL)
+	policy := &addressPolicy{allowPrivate: allowPrivateAddresses}
+	return &HTTPFetch{
+		policy: policy,
+		client: &http.Client{
+			Timeout: fetchTimeout,
+			// A redirect is another chance to reach somewhere internal, so
+			// every hop is checked rather than only the first.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if len(via) >= 5 {
+					return fmt.Errorf("too many redirects")
+				}
+				return policy.check(req.URL)
+			},
 		},
 	}
-	return fetch
 }
 
 func (HTTPFetch) Name() string { return "http_fetch" }
@@ -82,7 +78,7 @@ func (h *HTTPFetch) Execute(ctx context.Context, arguments json.RawMessage, env 
 	if err != nil {
 		return "", fmt.Errorf("could not parse the url: %w", err)
 	}
-	if err := h.checkAddress(target); err != nil {
+	if err := h.policy.check(target); err != nil {
 		return "", err
 	}
 
@@ -104,67 +100,4 @@ func (h *HTTPFetch) Execute(ctx context.Context, arguments json.RawMessage, env 
 	}
 
 	return fmt.Sprintf("HTTP %d\n\n%s", response.StatusCode, string(body)), nil
-}
-
-// checkAddress refuses private ranges and cloud metadata endpoints unless the
-// operator has opted in.
-//
-// The agent driving this tool is acting on text written by whoever controls the
-// page it read last, which is why the check is on the tool rather than left to
-// the prompt.
-func (h *HTTPFetch) checkAddress(target *url.URL) error {
-	switch strings.ToLower(target.Scheme) {
-	case "http", "https":
-	default:
-		return fmt.Errorf("only http and https urls may be fetched")
-	}
-
-	host := target.Hostname()
-	if host == "" {
-		return fmt.Errorf("the url has no host")
-	}
-
-	addresses, err := net.LookupIP(host)
-	if err != nil {
-		return fmt.Errorf("could not resolve %s", host)
-	}
-
-	// The cloud metadata endpoint is refused even when private addresses are
-	// allowed. A self-hoster may legitimately want an agent to reach something
-	// on their LAN; nobody legitimately wants one reading instance credentials.
-	for _, address := range addresses {
-		if isMetadataAddress(address) {
-			return fmt.Errorf("refusing to fetch %s: it resolves to a cloud metadata endpoint", host)
-		}
-	}
-
-	if h.allowPrivateAddresses {
-		return nil
-	}
-
-	for _, address := range addresses {
-		if !isPublicAddress(address) {
-			return fmt.Errorf("refusing to fetch %s: it resolves to a private or link-local address", host)
-		}
-	}
-	return nil
-}
-
-// isMetadataAddress reports the well-known instance metadata addresses used by
-// the major cloud providers.
-func isMetadataAddress(address net.IP) bool {
-	switch address.String() {
-	case "169.254.169.254", "fd00:ec2::254", "169.254.170.2":
-		return true
-	}
-	return false
-}
-
-func isPublicAddress(address net.IP) bool {
-	if address.IsLoopback() || address.IsPrivate() || address.IsUnspecified() ||
-		address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() ||
-		address.IsInterfaceLocalMulticast() {
-		return false
-	}
-	return true
 }

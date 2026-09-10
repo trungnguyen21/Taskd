@@ -212,32 +212,6 @@ func TestAgentValidation(t *testing.T) {
 	}
 }
 
-func TestToolCatalogIsExposed(t *testing.T) {
-	setupAPI()
-	defer teardown()
-
-	status, body := apiRequest(t, http.MethodGet, "/api/tools", nil)
-	if status != http.StatusOK {
-		t.Fatalf("Expected 200 listing tools, got %d: %s", status, body)
-	}
-
-	var tools []string
-	if err := json.Unmarshal(body, &tools); err != nil {
-		t.Fatalf("Failed to decode the tool catalog: %v", err)
-	}
-
-	expected := []string{"web_search", "http_fetch", "memory_read", "memory_write",
-		"send_telegram", "send_webhook"}
-	if len(tools) != len(expected) {
-		t.Fatalf("Expected %d tools in the catalog, got %v", len(expected), tools)
-	}
-	for i, name := range expected {
-		if tools[i] != name {
-			t.Errorf("Expected tool %d to be %s, got %s", i, name, tools[i])
-		}
-	}
-}
-
 // An operator upgrading an existing install must not have to apply SQL by hand,
 // so starting against a database that already has the schema has to work.
 func TestMigrationsRunOnEveryStart(t *testing.T) {

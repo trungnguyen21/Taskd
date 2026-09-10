@@ -20,6 +20,7 @@ func (s *SchedulerServer) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/agents/{id}", s.handleUpdateAgent)
 	mux.HandleFunc("DELETE /api/agents/{id}", s.handleDeleteAgent)
 	mux.HandleFunc("GET /api/tools", s.handleListTools)
+	s.registerMemoryRoutes(mux)
 }
 
 func (s *SchedulerServer) handleListAgents(w http.ResponseWriter, r *http.Request) {
@@ -93,8 +94,55 @@ func (s *SchedulerServer) handleDeleteAgent(w http.ResponseWriter, r *http.Reque
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleListTools returns the tools this installation can actually offer.
+//
+// A tool whose credential is not configured is absent rather than listed and
+// broken: a catalogue that offers something which fails the moment an agent
+// calls it is worse than one that is honest about what is available here.
 func (s *SchedulerServer) handleListTools(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, model.ToolCatalog)
+	type toolSummary struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+	}
+
+	summaries := []toolSummary{}
+	for _, name := range s.registry.Names() {
+		tool, ok := s.registry.Get(name)
+		if !ok {
+			continue
+		}
+		summaries = append(summaries, toolSummary{Name: tool.Name(), Description: tool.Description()})
+	}
+	writeJSON(w, http.StatusOK, summaries)
+}
+
+// registerMemoryRoutes exposes what agents have remembered, so a user can see
+// and correct it.
+func (s *SchedulerServer) registerMemoryRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/agents/{id}/memory", s.handleListMemory)
+	mux.HandleFunc("DELETE /api/memory/{id}", s.handleDeleteMemory)
+}
+
+func (s *SchedulerServer) handleListMemory(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("id")
+	if _, err := s.agents.Get(r.Context(), model.OwnerUserID, agentID); writeStoreError(w, err) {
+		return
+	}
+
+	records, err := s.memory.ListByAgent(r.Context(), model.OwnerUserID, agentID, store.MaxRecordsPerNamespace)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, records)
+}
+
+func (s *SchedulerServer) handleDeleteMemory(w http.ResponseWriter, r *http.Request) {
+	err := s.memory.Delete(r.Context(), model.OwnerUserID, r.PathValue("id"))
+	if writeStoreError(w, err) {
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func decodeBody(w http.ResponseWriter, r *http.Request, target interface{}) bool {

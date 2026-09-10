@@ -31,8 +31,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	registry := tools.NewRegistry()
-	registry.Register(tools.NewHTTPFetch(os.Getenv("TASKD_ALLOW_PRIVATE_FETCH") == "true"))
+	registry := tools.BuildRegistry(pool, tools.ConfigFromEnv())
 
 	// The provider credential comes from the environment until stored
 	// credentials land.

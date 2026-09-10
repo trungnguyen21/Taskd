@@ -22,6 +22,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_HOST: postgres
+      # The API service builds the same catalogue so the dashboard shows what
+      # this installation can actually offer.
+      TASKD_ALLOW_PRIVATE_FETCH: ${TASKD_ALLOW_PRIVATE_FETCH:-false}
+      TASKD_SEARCH_API_KEY: ${TASKD_SEARCH_API_KEY:-}
+      TASKD_TELEGRAM_BOT_TOKEN: ${TASKD_TELEGRAM_BOT_TOKEN:-}
+      TASKD_TELEGRAM_CHAT_ID: ${TASKD_TELEGRAM_CHAT_ID:-}
     ports:
       - "8081:8081"
     depends_on:
@@ -57,6 +63,10 @@ services:
       # that fetches arbitrary URLs from inside the deployment is otherwise an
       # SSRF engine pointed at your own network.
       TASKD_ALLOW_PRIVATE_FETCH: ${TASKD_ALLOW_PRIVATE_FETCH:-false}
+      # Tools whose credentials are unset are not offered at all.
+      TASKD_SEARCH_API_KEY: ${TASKD_SEARCH_API_KEY:-}
+      TASKD_TELEGRAM_BOT_TOKEN: ${TASKD_TELEGRAM_BOT_TOKEN:-}
+      TASKD_TELEGRAM_CHAT_ID: ${TASKD_TELEGRAM_CHAT_ID:-}
     depends_on:
       - postgres
       - coordinator
