@@ -24,7 +24,7 @@ implementation order and progress against it.
       tool to call.
 - [x] **6. Secrets + auth**
       `secrets` table, envelope encryption, write-only key API, single-user login.
-- [ ] **7. Delivery + inbox + failure notification**
+- [x] **7. Delivery + inbox + failure notification**
       Run output inbox, Telegram chunking, consecutive-failure alerting.
 - [ ] **8. Dashboard**
       Five screens, dark-only, Helvetica, flat colours, served by the API service.
@@ -32,6 +32,13 @@ implementation order and progress against it.
       Health endpoints, graceful shutdown, embedded tzdata, k8s manifests.
 
 ## Notes
+
+- The suite now exceeds Go's default 10-minute test timeout, because nearly
+  every test boots its own Postgres container. Run it with `-timeout 40m`.
+  Sharing one container across the package is the fix and is worth doing
+  before slice 9 adds more.
+- Test ports are deliberately unusual (`:18081`, `:51050`) so a suite run does
+  not collide with a development server running the app on its normal ports.
 
 - Legacy `tasks` table and the `/schedule` endpoint stay until slice 3 retires them,
   so the inherited integration tests keep passing meanwhile.

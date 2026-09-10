@@ -58,7 +58,7 @@ func waitForRunStatus(t *testing.T, runID, want string) map[string]interface{} {
 // visible through the API.
 func TestRunIsDispatchedExecutedAndReported(t *testing.T) {
 	cluster = Cluster{}
-	cluster.LaunchCluster(apiPort, ":50050", 2)
+	cluster.LaunchCluster(apiPort, coordinatorPort, 2)
 	defer teardown()
 
 	agentID := createAgent(t, "Dispatched")
@@ -80,7 +80,7 @@ func TestRunIsDispatchedExecutedAndReported(t *testing.T) {
 // Runs are spread over the pool, and all of them complete.
 func TestRunsAreDistributedAcrossWorkers(t *testing.T) {
 	cluster = Cluster{}
-	cluster.LaunchCluster(apiPort, ":50050", 3)
+	cluster.LaunchCluster(apiPort, coordinatorPort, 3)
 	defer teardown()
 
 	agentID := createAgent(t, "Busy")
@@ -99,7 +99,7 @@ func TestRunsAreDistributedAcrossWorkers(t *testing.T) {
 // and then dropped.
 func TestRunStaysPendingWhileNoWorkersAreAvailable(t *testing.T) {
 	cluster = Cluster{}
-	cluster.LaunchCluster(apiPort, ":50050", 1)
+	cluster.LaunchCluster(apiPort, coordinatorPort, 1)
 	defer teardown()
 
 	agentID := createAgent(t, "Unserviced")
@@ -185,7 +185,7 @@ func TestRunWithALiveLeaseIsNotReaped(t *testing.T) {
 // The coordinator forgets workers that stop sending heartbeats.
 func TestCoordinatorReleasesInactiveWorkers(t *testing.T) {
 	cluster = Cluster{}
-	cluster.LaunchCluster(apiPort, ":50050", 2)
+	cluster.LaunchCluster(apiPort, coordinatorPort, 2)
 	defer teardown()
 
 	if err := cluster.workers[0].Stop(); err != nil {

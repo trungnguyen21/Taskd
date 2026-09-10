@@ -34,6 +34,22 @@ type Tool interface {
 	Execute(ctx context.Context, arguments json.RawMessage, env Env) (string, error)
 }
 
+// Configurable is implemented by tools whose availability depends on
+// configuration the user edits at runtime.
+type Configurable interface {
+	Configured(ctx context.Context, userID string) bool
+}
+
+// Available reports whether a tool can be used by this user right now. A tool
+// that does not implement Configurable is always available.
+func Available(ctx context.Context, tool Tool, userID string) bool {
+	configurable, ok := tool.(Configurable)
+	if !ok {
+		return true
+	}
+	return configurable.Configured(ctx, userID)
+}
+
 // Registry holds the tools an installation offers.
 type Registry struct {
 	tools map[string]Tool

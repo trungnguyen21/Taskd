@@ -8,6 +8,7 @@ import (
 
 	"github.com/JyotinderSingh/task-queue/pkg/model"
 	"github.com/JyotinderSingh/task-queue/pkg/store"
+	"github.com/JyotinderSingh/task-queue/pkg/tools"
 )
 
 // registerAgentRoutes wires the dashboard-facing agent endpoints. These are
@@ -109,6 +110,11 @@ func (s *SchedulerServer) handleListTools(w http.ResponseWriter, r *http.Request
 	for _, name := range s.registry.Names() {
 		tool, ok := s.registry.Get(name)
 		if !ok {
+			continue
+		}
+		// Some tools depend on settings the user edits while the process runs,
+		// so availability is decided per request rather than at startup.
+		if !tools.Available(r.Context(), tool, model.OwnerUserID) {
 			continue
 		}
 		summaries = append(summaries, toolSummary{Name: tool.Name(), Description: tool.Description()})

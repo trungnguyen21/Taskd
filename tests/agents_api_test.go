@@ -8,7 +8,12 @@ import (
 	"testing"
 )
 
-const apiPort = ":8081"
+// Test ports are deliberately unusual, so a suite run does not collide with a
+// development server running the app on its normal ports.
+const (
+	apiPort         = ":18081"
+	coordinatorPort = ":51050"
+)
 
 // apiRequest drives the dashboard-facing REST API the way the dashboard does.
 // Tests assert on what a user could observe through it and never on the

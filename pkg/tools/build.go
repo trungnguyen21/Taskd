@@ -18,8 +18,8 @@ type Config struct {
 	SearchAPIKey  string
 	SearchBaseURL string
 
-	TelegramToken   string
-	TelegramChatID  string
+	// TelegramBaseURL points the Telegram client somewhere else, for tests.
+	// The token and chat id are per-user and read from the database.
 	TelegramBaseURL string
 }
 
@@ -29,8 +29,6 @@ func ConfigFromEnv() Config {
 		AllowPrivateAddresses: os.Getenv("TASKD_ALLOW_PRIVATE_FETCH") == "true",
 		SearchAPIKey:          os.Getenv("TASKD_SEARCH_API_KEY"),
 		SearchBaseURL:         os.Getenv("TASKD_SEARCH_BASE_URL"),
-		TelegramToken:         os.Getenv("TASKD_TELEGRAM_BOT_TOKEN"),
-		TelegramChatID:        os.Getenv("TASKD_TELEGRAM_CHAT_ID"),
 		TelegramBaseURL:       os.Getenv("TASKD_TELEGRAM_BASE_URL"),
 	}
 }
@@ -40,7 +38,7 @@ func ConfigFromEnv() Config {
 // A tool whose credential is missing is not registered at all. A catalogue that
 // lists a tool which fails the moment an agent calls it is worse than one that
 // is honest about what this installation can do.
-func BuildRegistry(pool *pgxpool.Pool, config Config) *Registry {
+func BuildRegistry(pool *pgxpool.Pool, settings TelegramSettings, config Config) *Registry {
 	registry := NewRegistry()
 
 	registry.Register(NewHTTPFetch(config.AllowPrivateAddresses))
@@ -56,9 +54,10 @@ func BuildRegistry(pool *pgxpool.Pool, config Config) *Registry {
 		registry.Register(NewWebSearch(config.SearchBaseURL, config.SearchAPIKey))
 	}
 
-	if config.TelegramToken != "" && config.TelegramChatID != "" {
-		registry.Register(NewSendTelegram(config.TelegramBaseURL,
-			config.TelegramToken, config.TelegramChatID))
+	// Telegram is always registered. Whether it is offered to a given user
+	// depends on their settings, which they change while the process runs.
+	if settings != nil {
+		registry.Register(NewSendTelegram(config.TelegramBaseURL, settings))
 	}
 
 	return registry

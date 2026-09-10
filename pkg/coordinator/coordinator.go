@@ -22,7 +22,10 @@ import (
 	"github.com/JyotinderSingh/task-queue/pkg/common"
 	"github.com/JyotinderSingh/task-queue/pkg/materializer"
 	"github.com/JyotinderSingh/task-queue/pkg/model"
+	"github.com/JyotinderSingh/task-queue/pkg/notifier"
 	"github.com/JyotinderSingh/task-queue/pkg/reaper"
+	"github.com/JyotinderSingh/task-queue/pkg/secretbox"
+	"github.com/JyotinderSingh/task-queue/pkg/store"
 )
 
 const (
@@ -52,6 +55,7 @@ type CoordinatorServer struct {
 	clock               clock.Clock
 	materializer        *materializer.Materializer
 	reaper              *reaper.Reaper
+	notifier            *notifier.Notifier
 	ctx                 context.Context    // The root context for all goroutines
 	cancel              context.CancelFunc // Function to cancel the context
 	wg                  sync.WaitGroup     // WaitGroup to wait for all goroutines to finish
@@ -99,6 +103,15 @@ func (s *CoordinatorServer) Start() error {
 	}
 	s.materializer = materializer.New(s.dbPool, s.clock)
 	s.reaper = reaper.New(s.dbPool, s.clock)
+
+	sealer, err := secretbox.NewFromEnv()
+	if err != nil {
+		return err
+	}
+	settings := store.NewSettingsStore(s.dbPool,
+		store.NewSecretStore(s.dbPool, sealer))
+	s.notifier = notifier.New(s.dbPool, settings, s.clock,
+		os.Getenv("TASKD_TELEGRAM_BASE_URL"))
 
 	go s.scanDatabase()
 
@@ -189,6 +202,11 @@ func (s *CoordinatorServer) UpdateRunStatus(ctx context.Context, req *pb.UpdateR
 			req.GetRunId(), status, now, req.GetOutput(), req.GetError(),
 			req.GetPromptTokens(), req.GetCompletionTokens())
 		if err != nil {
+			return nil, err
+		}
+
+		if err := recordAgentOutcome(ctx, s.dbPool, req.GetRunId(),
+			status == model.RunSucceeded); err != nil {
 			return nil, err
 		}
 
@@ -426,6 +444,7 @@ func (s *CoordinatorServer) tick() {
 	s.materializeSchedules()
 	s.dispatchPendingRuns()
 	s.reapExpiredRuns()
+	s.reportFailingAgents()
 }
 
 // materializeSchedules expands due schedules into runs.
@@ -455,5 +474,38 @@ func (s *CoordinatorServer) reapExpiredRuns() {
 	}
 	if reaped > 0 {
 		log.Printf("Failed %d run(s) whose worker stopped reporting", reaped)
+	}
+}
+
+// recordAgentOutcome keeps the consecutive-failure count that decides when the
+// platform reports an agent as broken. A success clears the count and the
+// previous report, so an agent that recovers can be reported again if it breaks
+// later.
+func recordAgentOutcome(ctx context.Context, pool *pgxpool.Pool, runID string, succeeded bool) error {
+	if succeeded {
+		_, err := pool.Exec(ctx, `UPDATE agents
+			SET consecutive_failures = 0, failure_notified_at = NULL
+			WHERE id = (SELECT agent_id FROM runs WHERE id = $1)`, runID)
+		return err
+	}
+
+	_, err := pool.Exec(ctx, `UPDATE agents
+		SET consecutive_failures = consecutive_failures + 1
+		WHERE id = (SELECT agent_id FROM runs WHERE id = $1)`, runID)
+	return err
+}
+
+// reportFailingAgents tells the operator about agents that have stopped working.
+func (s *CoordinatorServer) reportFailingAgents() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	reported, err := s.notifier.RunOnce(ctx)
+	if err != nil {
+		log.Printf("Failed to report failing agents: %v", err)
+		return
+	}
+	if reported > 0 {
+		log.Printf("Reported %d failing agent(s)", reported)
 	}
 }

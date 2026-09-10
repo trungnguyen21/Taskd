@@ -26,8 +26,6 @@ services:
       # this installation can actually offer.
       TASKD_ALLOW_PRIVATE_FETCH: ${TASKD_ALLOW_PRIVATE_FETCH:-false}
       TASKD_SEARCH_API_KEY: ${TASKD_SEARCH_API_KEY:-}
-      TASKD_TELEGRAM_BOT_TOKEN: ${TASKD_TELEGRAM_BOT_TOKEN:-}
-      TASKD_TELEGRAM_CHAT_ID: ${TASKD_TELEGRAM_CHAT_ID:-}
       # Seals stored credentials. Generate with: openssl rand -base64 32
       TASKD_SECRET_KEY: ${TASKD_SECRET_KEY}
       # Sets the dashboard password on first start.
@@ -46,6 +44,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_HOST: postgres
+      # The coordinator reports agents that have stopped working, so it needs
+      # to unseal the notification credential.
+      TASKD_SECRET_KEY: ${TASKD_SECRET_KEY}
     ports:
       - "8080:8080"
     depends_on:
@@ -69,8 +70,6 @@ services:
       TASKD_ALLOW_PRIVATE_FETCH: ${TASKD_ALLOW_PRIVATE_FETCH:-false}
       # Tools whose credentials are unset are not offered at all.
       TASKD_SEARCH_API_KEY: ${TASKD_SEARCH_API_KEY:-}
-      TASKD_TELEGRAM_BOT_TOKEN: ${TASKD_TELEGRAM_BOT_TOKEN:-}
-      TASKD_TELEGRAM_CHAT_ID: ${TASKD_TELEGRAM_CHAT_ID:-}
       # Workers unseal the stored credential at the start of each run.
       TASKD_SECRET_KEY: ${TASKD_SECRET_KEY}
     depends_on:

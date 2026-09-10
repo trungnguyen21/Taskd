@@ -33,13 +33,14 @@ func main() {
 	}
 	defer pool.Close()
 
-	registry := tools.BuildRegistry(pool, tools.ConfigFromEnv())
-
 	sealer, err := secretbox.NewFromEnv()
 	if err != nil {
 		log.Fatalf("Cannot start: %v", err)
 	}
 	secrets := store.NewSecretStore(pool, sealer)
+	settings := store.NewSettingsStore(pool, secrets)
+
+	registry := tools.BuildRegistry(pool, settings, tools.ConfigFromEnv())
 
 	agentExecutor := executor.New(pool, secrets, registry, clock.Real{},
 		os.Getenv("TASKD_MODEL_API_KEY"))

@@ -52,7 +52,7 @@ func launchWithModel(t *testing.T) *fakeModel {
 	t.Cleanup(model.close)
 
 	cluster = Cluster{}
-	cluster.LaunchCluster(apiPort, ":50050", 1)
+	cluster.LaunchCluster(apiPort, coordinatorPort, 1)
 	return model
 }
 

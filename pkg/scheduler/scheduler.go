@@ -31,6 +31,8 @@ type SchedulerServer struct {
 	steps              *store.StepStore
 	memory             *store.MemoryStore
 	secrets            *store.SecretStore
+	settings           *store.SettingsStore
+	toolConfig         tools.Config
 	users              *store.UserStore
 	registry           *tools.Registry
 	clock              clock.Clock
@@ -80,6 +82,9 @@ func (s *SchedulerServer) Start() error {
 		return err
 	}
 	s.secrets = store.NewSecretStore(s.dbPool, sealer)
+	s.settings = store.NewSettingsStore(s.dbPool, s.secrets)
+	s.toolConfig = tools.ConfigFromEnv()
+	s.registry = tools.BuildRegistry(s.dbPool, s.settings, s.toolConfig)
 
 	// An installation is closed from its first boot rather than after a setup
 	// step the operator might never reach.
@@ -95,7 +100,6 @@ func (s *SchedulerServer) Start() error {
 	if !hasPassword {
 		return fmt.Errorf("no password is set: start once with TASKD_PASSWORD to set one")
 	}
-	s.registry = tools.BuildRegistry(s.dbPool, tools.ConfigFromEnv())
 
 	// A per-server mux rather than the default one, so that more than one
 	// server can exist in a process - which the integration tests rely on.
@@ -105,6 +109,7 @@ func (s *SchedulerServer) Start() error {
 	s.registerScheduleRoutes(mux)
 	s.registerAuthRoutes(mux)
 	s.registerSecretRoutes(mux)
+	s.registerInboxRoutes(mux)
 
 	s.httpServer = &http.Server{
 		Addr:    s.serverPort,

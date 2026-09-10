@@ -16,6 +16,7 @@ import (
 	"github.com/JyotinderSingh/task-queue/pkg/executor"
 	"github.com/JyotinderSingh/task-queue/pkg/materializer"
 	"github.com/JyotinderSingh/task-queue/pkg/model"
+	"github.com/JyotinderSingh/task-queue/pkg/notifier"
 	"github.com/JyotinderSingh/task-queue/pkg/reaper"
 	"github.com/JyotinderSingh/task-queue/pkg/scheduler"
 	"github.com/JyotinderSingh/task-queue/pkg/secretbox"
@@ -47,6 +48,7 @@ type Cluster struct {
 	Clock              *clock.Fake
 	Materializer       *materializer.Materializer
 	Reaper             *reaper.Reaper
+	Notifier           *notifier.Notifier
 	// Model is a default fake model endpoint, so that any agent created by a
 	// test has somewhere to talk to. Tests that script specific responses build
 	// their own and point an agent at it instead.
@@ -60,6 +62,9 @@ type Cluster struct {
 	// Session is the cookie every API request carries, since the API is closed
 	// to anyone without one.
 	Session *http.Cookie
+	// Settings is the per-user configuration the tools and notifier resolve
+	// through.
+	Settings *store.SettingsStore
 }
 
 func (c *Cluster) LaunchCluster(schedulerPort string, coordinatorPort string, numWorkers int8) {
@@ -85,13 +90,15 @@ func (c *Cluster) LaunchCluster(schedulerPort string, coordinatorPort string, nu
 	// than code.
 	config := c.ToolConfig
 	config.AllowPrivateAddresses = true
-	registry := tools.BuildRegistry(c.DB, config)
 
 	sealer, err := secretbox.New(testMasterKey)
 	if err != nil {
 		log.Fatalf("Could not build the sealer: %v", err)
 	}
 	secrets := store.NewSecretStore(c.DB, sealer)
+	c.Settings = store.NewSettingsStore(c.DB, secrets)
+
+	registry := tools.BuildRegistry(c.DB, c.Settings, config)
 
 	c.workers = make([]*worker.WorkerServer, numWorkers)
 	for i := 0; i < int(numWorkers); i++ {
@@ -163,6 +170,7 @@ func (c *Cluster) StartAPI(schedulerPort string) {
 	// credentials, and without a password it would be open to the network.
 	os.Setenv("TASKD_SECRET_KEY", testMasterKey)
 	os.Setenv("TASKD_PASSWORD", testPassword)
+	os.Setenv("TASKD_TELEGRAM_BASE_URL", c.ToolConfig.TelegramBaseURL)
 
 	c.scheduler = scheduler.NewServerWithClock(schedulerPort, c.dbConnectionString(), c.Clock)
 	startServer(c.scheduler)
@@ -187,6 +195,13 @@ func (c *Cluster) StartAPI(schedulerPort string) {
 	}
 	c.Materializer = materializer.New(c.DB, c.Clock)
 	c.Reaper = reaper.New(c.DB, c.Clock)
+
+	sealer, err := secretbox.New(testMasterKey)
+	if err != nil {
+		log.Fatalf("Could not build the sealer: %v", err)
+	}
+	settings := store.NewSettingsStore(c.DB, store.NewSecretStore(c.DB, sealer))
+	c.Notifier = notifier.New(c.DB, settings, c.Clock, c.ToolConfig.TelegramBaseURL)
 
 	c.signIn(schedulerPort)
 }

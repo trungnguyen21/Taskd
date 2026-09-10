@@ -21,27 +21,41 @@ const DefaultTelegramBaseURL = "https://api.telegram.org"
 
 const deliveryTimeout = 30 * time.Second
 
+// TelegramSettings resolves a user's bot token and chat id.
+//
+// It is resolved per call rather than at startup, because the operator edits
+// these in the dashboard and a tool built once at boot would keep sending to
+// wherever it was pointed when the process started.
+type TelegramSettings interface {
+	TelegramDelivery(ctx context.Context, userID string) (token, chatID string, ok bool)
+}
+
 // SendTelegram delivers text to the operator's Telegram chat.
 //
 // Delivery is a tool the model calls rather than a property of the schedule,
 // which is what makes "only tell me if something actually changed" expressible.
 type SendTelegram struct {
-	baseURL string
-	token   string
-	chatID  string
-	client  *http.Client
+	baseURL  string
+	settings TelegramSettings
+	client   *http.Client
 }
 
-func NewSendTelegram(baseURL, token, chatID string) *SendTelegram {
+func NewSendTelegram(baseURL string, settings TelegramSettings) *SendTelegram {
 	if baseURL == "" {
 		baseURL = DefaultTelegramBaseURL
 	}
 	return &SendTelegram{
-		baseURL: strings.TrimSuffix(baseURL, "/"),
-		token:   token,
-		chatID:  chatID,
-		client:  &http.Client{Timeout: deliveryTimeout},
+		baseURL:  strings.TrimSuffix(baseURL, "/"),
+		settings: settings,
+		client:   &http.Client{Timeout: deliveryTimeout},
 	}
+}
+
+// Configured reports whether this user can actually be reached, so the
+// catalogue does not offer a tool that would fail the moment it is called.
+func (s *SendTelegram) Configured(ctx context.Context, userID string) bool {
+	_, _, ok := s.settings.TelegramDelivery(ctx, userID)
+	return ok
 }
 
 func (SendTelegram) Name() string { return "send_telegram" }
@@ -74,18 +88,23 @@ func (s *SendTelegram) Execute(ctx context.Context, arguments json.RawMessage, e
 		return "", fmt.Errorf("text is required")
 	}
 
+	token, chatID, ok := s.settings.TelegramDelivery(ctx, env.UserID)
+	if !ok {
+		return "", fmt.Errorf("Telegram is not configured: set a bot token and chat id in settings")
+	}
+
 	chunks := splitForTelegram(input.Text)
 	for _, chunk := range chunks {
 		// Plain text is the default: model output is full of characters that
 		// Telegram's markdown modes require escaping, and an unescaped one is a
 		// failed send rather than an ugly message.
-		body, err := json.Marshal(map[string]string{"chat_id": s.chatID, "text": chunk})
+		body, err := json.Marshal(map[string]string{"chat_id": chatID, "text": chunk})
 		if err != nil {
 			return "", err
 		}
 
 		request, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			fmt.Sprintf("%s/bot%s/sendMessage", s.baseURL, s.token), bytes.NewReader(body))
+			fmt.Sprintf("%s/bot%s/sendMessage", s.baseURL, token), bytes.NewReader(body))
 		if err != nil {
 			return "", err
 		}

@@ -198,12 +198,12 @@ func TestAgentDeliversToTelegram(t *testing.T) {
 
 	cluster = Cluster{Model: model, ToolConfig: tools.Config{
 		TelegramBaseURL: telegramServer.URL,
-		TelegramToken:   "test-token",
-		TelegramChatID:  "4242",
 	}}
 	model.always(textResponse("done"))
-	cluster.LaunchCluster(apiPort, ":50050", 1)
+	cluster.LaunchCluster(apiPort, coordinatorPort, 1)
 	defer teardown()
+
+	configureTelegram(t, "test-token", "4242")
 
 	model.queue(toolCallResponse("call-1", "send_telegram",
 		`{"text":"Good morning. Three meetings today."}`))
@@ -239,12 +239,12 @@ func TestLongTelegramMessageIsSplit(t *testing.T) {
 
 	cluster = Cluster{Model: model, ToolConfig: tools.Config{
 		TelegramBaseURL: telegramServer.URL,
-		TelegramToken:   "test-token",
-		TelegramChatID:  "4242",
 	}}
 	model.always(textResponse("done"))
-	cluster.LaunchCluster(apiPort, ":50050", 1)
+	cluster.LaunchCluster(apiPort, coordinatorPort, 1)
 	defer teardown()
+
+	configureTelegram(t, "test-token", "4242")
 
 	long := strings.Repeat("A very long line of digest text.\n", 400)
 	arguments, _ := json.Marshal(map[string]string{"text": long})
@@ -304,7 +304,7 @@ func TestWebSearchReturnsResults(t *testing.T) {
 		SearchAPIKey:  "search-key",
 	}}
 	model.always(textResponse("done"))
-	cluster.LaunchCluster(apiPort, ":50050", 1)
+	cluster.LaunchCluster(apiPort, coordinatorPort, 1)
 	defer teardown()
 
 	model.queue(toolCallResponse("call-1", "web_search", `{"query":"market sentiment"}`))

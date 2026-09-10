@@ -42,12 +42,30 @@ func New(pool *pgxpool.Pool, clk clock.Clock) *Reaper {
 func (r *Reaper) RunOnce(ctx context.Context) (int, error) {
 	now := r.clock.Now()
 
-	tag, err := r.pool.Exec(ctx, `UPDATE runs
-		SET status = $1, error = $2, finished_at = $3
-		WHERE status = $4 AND lease_expires_at IS NOT NULL AND lease_expires_at < $3`,
+	// The agents whose runs are being failed have their failure count bumped in
+	// the same statement, so a worker that keeps dying eventually surfaces as a
+	// broken agent rather than as silence.
+	rows, err := r.pool.Query(ctx, `WITH reaped AS (
+			UPDATE runs SET status = $1, error = $2, finished_at = $3
+			WHERE status = $4 AND lease_expires_at IS NOT NULL AND lease_expires_at < $3
+			RETURNING agent_id
+		), counted AS (
+			UPDATE agents SET consecutive_failures = consecutive_failures + 1
+			WHERE id IN (SELECT agent_id FROM reaped)
+			RETURNING 1
+		)
+		SELECT COUNT(*) FROM reaped`,
 		model.RunFailed, lostWorkerMessage, now, model.RunRunning)
 	if err != nil {
 		return 0, err
 	}
-	return int(tag.RowsAffected()), nil
+	defer rows.Close()
+
+	reaped := 0
+	if rows.Next() {
+		if err := rows.Scan(&reaped); err != nil {
+			return 0, err
+		}
+	}
+	return reaped, rows.Err()
 }

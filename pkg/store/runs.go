@@ -124,3 +124,79 @@ func (s *RunStore) RecentOutputs(ctx context.Context, userID, agentID string, li
 	}
 	return outputs, rows.Err()
 }
+
+// InboxItem is a run as the inbox shows it: what an agent produced, and whether
+// it has been read.
+type InboxItem struct {
+	RunID     string     `json:"run_id"`
+	AgentID   string     `json:"agent_id"`
+	AgentName string     `json:"agent_name"`
+	Status    string     `json:"status"`
+	Output    string     `json:"output"`
+	Error     string     `json:"error"`
+	CreatedAt time.Time  `json:"created_at"`
+	ReadAt    *time.Time `json:"read_at"`
+}
+
+// Inbox returns finished runs newest first, with the unread count.
+//
+// Every run's output is recorded whether or not the agent chose to notify, so
+// this is useful before a delivery channel is configured and nothing is lost
+// when a confused agent forgets to send.
+func (s *RunStore) Inbox(ctx context.Context, userID string, limit int) ([]*InboxItem, int, error) {
+	rows, err := s.pool.Query(ctx, `SELECT r.id, r.agent_id, a.name, r.status,
+			r.output, r.error, r.created_at, r.read_at
+		FROM runs r JOIN agents a ON a.id = r.agent_id
+		WHERE r.user_id = $1 AND r.finished_at IS NOT NULL
+		ORDER BY r.finished_at DESC LIMIT $2`, userID, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	items := []*InboxItem{}
+	for rows.Next() {
+		var item InboxItem
+		if err := rows.Scan(&item.RunID, &item.AgentID, &item.AgentName, &item.Status,
+			&item.Output, &item.Error, &item.CreatedAt, &item.ReadAt); err != nil {
+			return nil, 0, err
+		}
+		items = append(items, &item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	var unread int
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM runs
+		WHERE user_id = $1 AND finished_at IS NOT NULL AND read_at IS NULL`,
+		userID).Scan(&unread); err != nil {
+		return nil, 0, err
+	}
+
+	return items, unread, nil
+}
+
+// MarkRead clears the unread flag on one run.
+func (s *RunStore) MarkRead(ctx context.Context, userID, runID string, now time.Time) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE runs SET read_at = $3 WHERE id = $1 AND user_id = $2 AND read_at IS NULL`,
+		runID, userID, now)
+	if err != nil {
+		return translateNoRows(err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Already read, or not there. Either way there is nothing to do, but a
+		// missing run should still read as missing.
+		var exists bool
+		if err := s.pool.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM runs WHERE id = $1 AND user_id = $2)`,
+			runID, userID).Scan(&exists); err != nil {
+			return translateNoRows(err)
+		}
+		if !exists {
+			return ErrNotFound
+		}
+	}
+	return nil
+}
