@@ -14,12 +14,14 @@ implementation order and progress against it.
 - [x] **3. Run dispatch + lease + reaper**
       Coordinator dispatches runs (not command strings), worker leases,
       reaper fails expired runs, worker backpressure.
-- [ ] **4. Executor**
+- [x] **4. Executor**
       OpenAI-compatible tool-calling loop, `run_steps` persistence, budgets,
       malformed-tool-call tolerance, fake model server in tests.
 - [ ] **5. Tool registry**
-      MCP-shaped registry; memory_read/write, http_fetch, web_search,
-      send_telegram, send_webhook; egress rules; `memory_records` table.
+      memory_read/write, web_search, send_telegram, send_webhook;
+      `memory_records` table. The MCP-shaped registry, `http_fetch` and the
+      egress rules landed early in slice 4, because the loop needed a real
+      tool to call.
 - [ ] **6. Secrets + auth**
       `secrets` table, envelope encryption, write-only key API, single-user login.
 - [ ] **7. Delivery + inbox + failure notification**

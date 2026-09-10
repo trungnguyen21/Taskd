@@ -24,6 +24,7 @@ func (s *SchedulerServer) registerScheduleRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/agents/{id}/runs", s.handleListRuns)
 	mux.HandleFunc("POST /api/agents/{id}/runs", s.handleTriggerRun)
 	mux.HandleFunc("GET /api/runs/{id}", s.handleGetRun)
+	mux.HandleFunc("GET /api/runs/{id}/steps", s.handleListRunSteps)
 }
 
 func (s *SchedulerServer) handleSetSchedule(w http.ResponseWriter, r *http.Request) {
@@ -142,4 +143,21 @@ func (s *SchedulerServer) handleGetRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, run)
+}
+
+// handleListRunSteps returns a run's trace: every model call and tool call in
+// order, with arguments and results. An unattended agent is only trustworthy if
+// what it did can be read back afterwards.
+func (s *SchedulerServer) handleListRunSteps(w http.ResponseWriter, r *http.Request) {
+	runID := r.PathValue("id")
+	if _, err := s.runs.Get(r.Context(), model.OwnerUserID, runID); writeStoreError(w, err) {
+		return
+	}
+
+	steps, err := s.steps.ListByRun(r.Context(), model.OwnerUserID, runID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, steps)
 }

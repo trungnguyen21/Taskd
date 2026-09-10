@@ -204,3 +204,17 @@ func TestCoordinatorReleasesInactiveWorkers(t *testing.T) {
 	agentID := createAgent(t, "Survivor")
 	waitForRunStatus(t, triggerRun(t, agentID), "succeeded")
 }
+
+// abandonRun puts a run into the state a worker leaves behind when it claims a
+// run and then dies: still running, with a lease that nothing is renewing.
+func abandonRun(t *testing.T, runID string, leaseExpiresAt time.Time) {
+	t.Helper()
+
+	_, err := cluster.DB.Exec(context.Background(),
+		`UPDATE runs SET status = 'running', picked_at = $2, started_at = $2,
+			lease_expires_at = $3 WHERE id = $1`,
+		runID, cluster.Clock.Now(), leaseExpiresAt)
+	if err != nil {
+		t.Fatalf("Failed to abandon run %s: %v", runID, err)
+	}
+}

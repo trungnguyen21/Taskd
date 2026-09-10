@@ -56,7 +56,8 @@ func decodeAgent(t *testing.T, body []byte) map[string]interface{} {
 func newAgentPayload(name string) map[string]interface{} {
 	return map[string]interface{}{
 		"name":          name,
-		"model":         "gpt-4o-mini",
+		"model":         "test-model",
+		"base_url":      cluster.Model.baseURL(),
 		"system_prompt": "You are a helpful scheduled agent.",
 		"user_prompt":   "Summarise the day.",
 		"tools":         []string{"web_search", "send_telegram"},
@@ -146,7 +147,7 @@ func TestAgentLifecycle(t *testing.T) {
 	if updated["system_prompt"] != "You are a helpful scheduled agent." {
 		t.Errorf("Expected the untouched prompt to survive the patch, got %v", updated["system_prompt"])
 	}
-	if updated["model"] != "gpt-4o-mini" {
+	if updated["model"] != "test-model" {
 		t.Errorf("Expected the untouched model to survive the patch, got %v", updated["model"])
 	}
 

@@ -5,16 +5,17 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v4/pgxpool"
 
 	"github.com/JyotinderSingh/task-queue/pkg/clock"
 	"github.com/JyotinderSingh/task-queue/pkg/coordinator"
+	"github.com/JyotinderSingh/task-queue/pkg/executor"
 	"github.com/JyotinderSingh/task-queue/pkg/materializer"
 	"github.com/JyotinderSingh/task-queue/pkg/reaper"
 	"github.com/JyotinderSingh/task-queue/pkg/scheduler"
+	"github.com/JyotinderSingh/task-queue/pkg/tools"
 	"github.com/JyotinderSingh/task-queue/pkg/worker"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -37,6 +38,10 @@ type Cluster struct {
 	Clock              *clock.Fake
 	Materializer       *materializer.Materializer
 	Reaper             *reaper.Reaper
+	// Model is a default fake model endpoint, so that any agent created by a
+	// test has somewhere to talk to. Tests that script specific responses build
+	// their own and point an agent at it instead.
+	Model *fakeModel
 	// DB is exposed so that a test can set up states the API cannot reach,
 	// such as a run abandoned by a worker that died.
 	DB *pgxpool.Pool
@@ -48,6 +53,8 @@ func (c *Cluster) LaunchCluster(schedulerPort string, coordinatorPort string, nu
 		log.Fatalf("Could not launch database container: %+v", err)
 	}
 
+	c.startDefaultModel()
+
 	if c.Clock == nil {
 		c.Clock = clock.NewFake(time.Now())
 	}
@@ -58,11 +65,16 @@ func (c *Cluster) LaunchCluster(schedulerPort string, coordinatorPort string, nu
 
 	c.StartAPI(schedulerPort)
 
+	// Workers run the real executor. The only thing faked is the model
+	// endpoint, which an agent points at through its own base_url.
+	registry := tools.NewRegistry()
+	registry.Register(tools.NewHTTPFetch(true))
+
 	c.workers = make([]*worker.WorkerServer, numWorkers)
 	for i := 0; i < int(numWorkers); i++ {
-		c.workers[i] = worker.NewServer("", c.coordinatorAddress)
+		agentExecutor := executor.New(c.DB, registry, c.Clock, "test-key")
+		c.workers[i] = worker.NewServerWithExecutor("", c.coordinatorAddress, agentExecutor)
 		startServer(c.workers[i])
-
 	}
 
 	c.waitForWorkers()
@@ -86,6 +98,11 @@ func (c *Cluster) StopCluster() {
 		}
 	}
 
+	if c.Model != nil {
+		c.Model.close()
+		c.Model = nil
+	}
+
 	if c.DB != nil {
 		c.DB.Close()
 		c.DB = nil
@@ -103,6 +120,8 @@ func (c *Cluster) LaunchAPI(schedulerPort string) {
 	if err := c.createDatabase(); err != nil {
 		log.Fatalf("Could not launch database container: %+v", err)
 	}
+
+	c.startDefaultModel()
 
 	c.StartAPI(schedulerPort)
 }
@@ -242,16 +261,12 @@ func clockAt(t time.Time) *clock.Fake {
 	return clock.NewFake(t)
 }
 
-// abandonRun puts a run into the state a worker leaves behind when it claims a
-// run and then dies: still running, with a lease that nothing is renewing.
-func abandonRun(t *testing.T, runID string, leaseExpiresAt time.Time) {
-	t.Helper()
-
-	_, err := cluster.DB.Exec(context.Background(),
-		`UPDATE runs SET status = 'running', picked_at = $2, started_at = $2,
-			lease_expires_at = $3 WHERE id = $1`,
-		runID, cluster.Clock.Now(), leaseExpiresAt)
-	if err != nil {
-		t.Fatalf("Failed to abandon run %s: %v", runID, err)
+// startDefaultModel gives the cluster a model endpoint that always answers, so
+// that agents created by tests which do not care about the model still run.
+func (c *Cluster) startDefaultModel() {
+	if c.Model != nil {
+		return
 	}
+	c.Model = newFakeModel()
+	c.Model.always(textResponse("done"))
 }

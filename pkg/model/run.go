@@ -48,5 +48,8 @@ type Run struct {
 	Error            string     `json:"error"`
 	PromptTokens     int        `json:"prompt_tokens"`
 	CompletionTokens int        `json:"completion_tokens"`
-	CreatedAt        time.Time  `json:"created_at"`
+	// RenderedPrompt is what the model was actually sent, so a user can see
+	// what it saw rather than what they think they wrote.
+	RenderedPrompt string    `json:"rendered_prompt"`
+	CreatedAt      time.Time `json:"created_at"`
 }

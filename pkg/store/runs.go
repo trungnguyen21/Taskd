@@ -22,7 +22,7 @@ func NewRunStore(pool *pgxpool.Pool) *RunStore {
 
 const runColumns = `id, agent_id, schedule_id, trigger, status, scheduled_for,
 	picked_at, started_at, finished_at, output, error, prompt_tokens,
-	completion_tokens, created_at`
+	completion_tokens, rendered_prompt, created_at`
 
 // Create records a run. Runs are created by the materializer when a schedule
 // fires, and by the API when a user triggers one by hand.
@@ -67,7 +67,8 @@ func scanRun(row scanner) (*model.Run, error) {
 	var run model.Run
 	err := row.Scan(&run.ID, &run.AgentID, &run.ScheduleID, &run.Trigger, &run.Status,
 		&run.ScheduledFor, &run.PickedAt, &run.StartedAt, &run.FinishedAt,
-		&run.Output, &run.Error, &run.PromptTokens, &run.CompletionTokens, &run.CreatedAt)
+		&run.Output, &run.Error, &run.PromptTokens, &run.CompletionTokens,
+		&run.RenderedPrompt, &run.CreatedAt)
 	if err != nil {
 		return nil, translateNoRows(err)
 	}
@@ -93,3 +94,33 @@ func translateNoRows(err error) error {
 // invalidTextRepresentation is the Postgres error raised when a value cannot be
 // cast to a column's type - here, a path parameter that is not a UUID.
 const invalidTextRepresentation = "22P02"
+
+// SetRenderedPrompt stores the conversation the model was actually sent.
+func (s *RunStore) SetRenderedPrompt(ctx context.Context, runID, prompt string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE runs SET rendered_prompt = $2 WHERE id = $1`, runID, prompt)
+	return err
+}
+
+// RecentOutputs returns the output of an agent's last successful runs, newest
+// first. It backs the last_n context mode.
+func (s *RunStore) RecentOutputs(ctx context.Context, userID, agentID string, limit int) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `SELECT output FROM runs
+		WHERE agent_id = $1 AND user_id = $2 AND status = $3 AND output <> ''
+		ORDER BY finished_at DESC NULLS LAST LIMIT $4`,
+		agentID, userID, model.RunSucceeded, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	outputs := []string{}
+	for rows.Next() {
+		var output string
+		if err := rows.Scan(&output); err != nil {
+			return nil, err
+		}
+		outputs = append(outputs, output)
+	}
+	return outputs, rows.Err()
+}

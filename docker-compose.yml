@@ -47,5 +47,16 @@ services:
       dockerfile: worker-dockerfile
     environment:
       WORKER_ADDRESS: worker
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+      # The provider credential used for agent runs.
+      TASKD_MODEL_API_KEY: ${TASKD_MODEL_API_KEY:-}
+      # Lets agents fetch addresses on the local network. Off by default: a tool
+      # that fetches arbitrary URLs from inside the deployment is otherwise an
+      # SSRF engine pointed at your own network.
+      TASKD_ALLOW_PRIVATE_FETCH: ${TASKD_ALLOW_PRIVATE_FETCH:-false}
     depends_on:
+      - postgres
       - coordinator

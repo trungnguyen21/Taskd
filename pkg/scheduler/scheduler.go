@@ -24,6 +24,7 @@ type SchedulerServer struct {
 	agents             *store.AgentStore
 	schedules          *store.ScheduleStore
 	runs               *store.RunStore
+	steps              *store.StepStore
 	clock              clock.Clock
 	ctx                context.Context
 	cancel             context.CancelFunc
@@ -62,6 +63,7 @@ func (s *SchedulerServer) Start() error {
 	s.agents = store.NewAgentStore(s.dbPool)
 	s.schedules = store.NewScheduleStore(s.dbPool)
 	s.runs = store.NewRunStore(s.dbPool)
+	s.steps = store.NewStepStore(s.dbPool)
 
 	// A per-server mux rather than the default one, so that more than one
 	// server can exist in a process - which the integration tests rely on.

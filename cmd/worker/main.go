@@ -1,8 +1,15 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"log"
+	"os"
 
+	"github.com/JyotinderSingh/task-queue/pkg/clock"
+	"github.com/JyotinderSingh/task-queue/pkg/common"
+	"github.com/JyotinderSingh/task-queue/pkg/executor"
+	"github.com/JyotinderSingh/task-queue/pkg/tools"
 	"github.com/JyotinderSingh/task-queue/pkg/worker"
 )
 
@@ -14,6 +21,25 @@ var (
 func main() {
 	flag.Parse()
 
-	worker := worker.NewServer(*serverPort, *coordinatorPort)
-	worker.Start()
+	ctx := context.Background()
+
+	// Workers read the database directly: Postgres is the system of record, and
+	// the coordinator is a participant in it rather than a gatekeeper.
+	pool, err := common.ConnectToDatabase(ctx, common.GetDBConnectionString())
+	if err != nil {
+		log.Fatalf("Could not connect to the database: %v", err)
+	}
+	defer pool.Close()
+
+	registry := tools.NewRegistry()
+	registry.Register(tools.NewHTTPFetch(os.Getenv("TASKD_ALLOW_PRIVATE_FETCH") == "true"))
+
+	// The provider credential comes from the environment until stored
+	// credentials land.
+	agentExecutor := executor.New(pool, registry, clock.Real{}, os.Getenv("TASKD_MODEL_API_KEY"))
+
+	server := worker.NewServerWithExecutor(*serverPort, *coordinatorPort, agentExecutor)
+	if err := server.Start(); err != nil {
+		log.Fatalf("Worker stopped: %v", err)
+	}
 }
