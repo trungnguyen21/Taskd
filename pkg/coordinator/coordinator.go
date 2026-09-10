@@ -31,7 +31,9 @@ import (
 const (
 	shutdownTimeout  = 5 * time.Second
 	defaultMaxMisses = 1
-	scanInterval     = 10 * time.Second
+	// defaultScanInterval is how often schedules are materialized, due runs are
+	// dispatched and abandoned runs are reaped.
+	defaultScanInterval = 10 * time.Second
 	// dispatchBatchSize bounds how many runs one scan offers to workers. The
 	// scan holds row locks while it talks to workers over the network, so the
 	// batch is kept small enough that the transaction stays short.
@@ -53,12 +55,15 @@ type CoordinatorServer struct {
 	dbConnectionString  string
 	dbPool              *pgxpool.Pool
 	clock               clock.Clock
-	materializer        *materializer.Materializer
-	reaper              *reaper.Reaper
-	notifier            *notifier.Notifier
-	ctx                 context.Context    // The root context for all goroutines
-	cancel              context.CancelFunc // Function to cancel the context
-	wg                  sync.WaitGroup     // WaitGroup to wait for all goroutines to finish
+	// scanInterval is configurable so that tests do not wait a real scan
+	// period for every run they trigger.
+	scanInterval time.Duration
+	materializer *materializer.Materializer
+	reaper       *reaper.Reaper
+	notifier     *notifier.Notifier
+	ctx          context.Context    // The root context for all goroutines
+	cancel       context.CancelFunc // Function to cancel the context
+	wg           sync.WaitGroup     // WaitGroup to wait for all goroutines to finish
 }
 
 type workerInfo struct {
@@ -83,9 +88,16 @@ func NewServerWithClock(port string, dbConnectionString string, clk clock.Clock)
 		dbConnectionString: dbConnectionString,
 		serverPort:         port,
 		clock:              clk,
+		scanInterval:       defaultScanInterval,
 		ctx:                ctx,
 		cancel:             cancel,
 	}
+}
+
+// SetScanInterval changes how often the coordinator scans. It exists for tests,
+// which would otherwise spend a scan period waiting for each run they trigger.
+func (s *CoordinatorServer) SetScanInterval(interval time.Duration) {
+	s.scanInterval = interval
 }
 
 // Start initiates the server's operations.
@@ -280,7 +292,7 @@ func (s *CoordinatorServer) SendHeartbeat(ctx context.Context, in *pb.HeartbeatR
 }
 
 func (s *CoordinatorServer) scanDatabase() {
-	ticker := time.NewTicker(scanInterval)
+	ticker := time.NewTicker(s.scanInterval)
 	defer ticker.Stop()
 
 	for {

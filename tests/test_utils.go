@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -43,7 +44,6 @@ type Cluster struct {
 	scheduler          *scheduler.SchedulerServer
 	coordinator        *coordinator.CoordinatorServer
 	workers            []*worker.WorkerServer
-	database           testcontainers.Container
 	databasePort       string
 	Clock              *clock.Fake
 	Materializer       *materializer.Materializer
@@ -81,6 +81,8 @@ func (c *Cluster) LaunchCluster(schedulerPort string, coordinatorPort string, nu
 
 	c.coordinatorAddress = "localhost" + coordinatorPort
 	c.coordinator = coordinator.NewServerWithClock(coordinatorPort, c.dbConnectionString(), c.Clock)
+	// Tests should not spend a production scan period waiting for each run.
+	c.coordinator.SetScanInterval(250 * time.Millisecond)
 	startServer(c.coordinator)
 
 	c.StartAPI(schedulerPort)
@@ -137,10 +139,6 @@ func (c *Cluster) StopCluster() {
 		c.DB.Close()
 		c.DB = nil
 	}
-
-	if c.database != nil {
-		c.database.Terminate(context.Background())
-	}
 }
 
 // LaunchAPI starts a database and the API service alone. Tests that only drive
@@ -186,13 +184,6 @@ func (c *Cluster) StartAPI(schedulerPort string) {
 		log.Fatalf("API service did not become healthy: %v", err)
 	}
 
-	if c.DB == nil {
-		pool, err := pgxpool.Connect(context.Background(), c.dbConnectionString())
-		if err != nil {
-			log.Fatalf("Could not connect to the test database: %v", err)
-		}
-		c.DB = pool
-	}
 	c.Materializer = materializer.New(c.DB, c.Clock)
 	c.Reaper = reaper.New(c.DB, c.Clock)
 
@@ -269,39 +260,104 @@ func (c *Cluster) dbConnectionString() string {
 		postgresUser, postgresPassword, postgresHost, c.databasePort, postgresDb)
 }
 
+// One database container serves the whole package. Starting one per test was
+// the dominant cost of the suite: tests that ran no agents at all cost as much
+// as tests that ran several.
+var (
+	sharedDatabase     testcontainers.Container
+	sharedDatabasePort string
+	sharedDatabaseOnce sync.Once
+	sharedDatabaseErr  error
+)
+
+// startSharedDatabase starts the container the first time it is asked for.
+func startSharedDatabase() (string, error) {
+	sharedDatabaseOnce.Do(func() {
+		ctx := context.Background()
+
+		request := testcontainers.ContainerRequest{
+			Image:        "postgres:16.1",
+			ExposedPorts: []string{"5432/tcp"},
+			Env: map[string]string{
+				"POSTGRES_PASSWORD": postgresPassword,
+				"POSTGRES_USER":     postgresUser,
+				"POSTGRES_DB":       postgresDb,
+			},
+			WaitingFor: wait.ForListeningPort("5432/tcp"),
+		}
+
+		sharedDatabase, sharedDatabaseErr = testcontainers.GenericContainer(ctx,
+			testcontainers.GenericContainerRequest{ContainerRequest: request, Started: true})
+		if sharedDatabaseErr != nil {
+			return
+		}
+
+		// A random host port, so a run does not collide with anything already
+		// listening on 5432.
+		port, err := sharedDatabase.MappedPort(ctx, "5432")
+		if err != nil {
+			sharedDatabaseErr = err
+			return
+		}
+		sharedDatabasePort = port.Port()
+	})
+
+	return sharedDatabasePort, sharedDatabaseErr
+}
+
+// stopSharedDatabase is called once the package's tests are done.
+func stopSharedDatabase() {
+	if sharedDatabase != nil {
+		sharedDatabase.Terminate(context.Background())
+	}
+}
+
+// createDatabase attaches to the shared container and clears whatever the
+// previous test left behind.
+//
+// Sharing the container means state has to be reset explicitly, so it is done
+// here rather than left to individual tests: one test's leftover rows becoming
+// another's mystery failure is the failure mode this has to avoid.
 func (c *Cluster) createDatabase() error {
+	port, err := startSharedDatabase()
+	if err != nil {
+		return err
+	}
+	c.databasePort = port
+
+	pool, err := pgxpool.Connect(context.Background(), c.dbConnectionString())
+	if err != nil {
+		return err
+	}
+	c.DB = pool
+
+	return c.resetDatabase()
+}
+
+// resetDatabase empties every table a test can write to. The owner row survives,
+// with its settings returned to their defaults.
+func (c *Cluster) resetDatabase() error {
 	ctx := context.Background()
 
-	// Define the container request using your custom image
-	req := testcontainers.ContainerRequest{
-		Image:        "postgres:16.1",
-		ExposedPorts: []string{"5432/tcp"},
-		Env: map[string]string{
-			"POSTGRES_PASSWORD": postgresPassword,
-			"POSTGRES_USER":     postgresUser,
-			"POSTGRES_DB":       postgresDb,
-		},
-		WaitingFor: wait.ForListeningPort("5432/tcp"),
+	// Nothing to clear before the first migration has ever run.
+	var migrated bool
+	if err := c.DB.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM information_schema.tables
+			WHERE table_name = 'agents')`).Scan(&migrated); err != nil {
+		return err
+	}
+	if !migrated {
+		return nil
 	}
 
-	// Start the container
-	var err error
-	c.database, err = testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	if err != nil {
+	if _, err := c.DB.Exec(ctx, `TRUNCATE agents, runs, run_steps, schedules,
+		memory_records, secrets, sessions RESTART IDENTITY CASCADE`); err != nil {
 		return err
 	}
 
-	// The container gets a random host port, so that tests do not collide with
-	// anything already listening on 5432.
-	port, err := c.database.MappedPort(ctx, "5432")
-	if err != nil {
-		return err
-	}
-	c.databasePort = port.Port()
-	return nil
+	_, err := c.DB.Exec(ctx, `UPDATE users
+		SET telegram_chat_id = '', failure_alerts_enabled = TRUE`)
+	return err
 }
 
 func WaitForCondition(condition func() bool, timeout time.Duration, retryInterval time.Duration) error {

@@ -19,6 +19,7 @@ func teardown() {
 
 func TestMain(m *testing.M) {
 	code := m.Run()
+	stopSharedDatabase()
 	os.Exit(code)
 }
 

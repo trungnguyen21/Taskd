@@ -33,10 +33,12 @@ implementation order and progress against it.
 
 ## Notes
 
-- The suite now exceeds Go's default 10-minute test timeout, because nearly
-  every test boots its own Postgres container. Run it with `-timeout 40m`.
-  Sharing one container across the package is the fix and is worth doing
-  before slice 9 adds more.
+- The suite shares one Postgres container across the package and truncates
+  between tests. Starting one per test was the dominant cost: measurement
+  showed tests running no agents at all cost as much as tests running seven,
+  which ruled out the theory that the coordinator's scan period was to blame.
+  The scan period is configurable too, and tests set it to 250ms. Together
+  these took the suite from ~1385s to ~230s on a contended machine.
 - Test ports are deliberately unusual (`:18081`, `:51050`) so a suite run does
   not collide with a development server running the app on its normal ports.
 
