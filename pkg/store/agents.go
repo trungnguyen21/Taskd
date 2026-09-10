@@ -26,7 +26,7 @@ func NewAgentStore(pool *pgxpool.Pool) *AgentStore {
 
 const agentColumns = `id, name, description, model, base_url, system_prompt, user_prompt,
 	tools, max_steps, max_tokens, max_duration_seconds, context_mode, context_runs,
-	enabled, created_at, updated_at`
+	secret_name, enabled, created_at, updated_at`
 
 // Create stores a new agent and returns it as persisted.
 func (s *AgentStore) Create(ctx context.Context, userID string, agent *model.Agent) (*model.Agent, error) {
@@ -37,12 +37,14 @@ func (s *AgentStore) Create(ctx context.Context, userID string, agent *model.Age
 
 	row := s.pool.QueryRow(ctx, `INSERT INTO agents
 		(user_id, name, description, model, base_url, system_prompt, user_prompt, tools,
-		 max_steps, max_tokens, max_duration_seconds, context_mode, context_runs, enabled)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		 max_steps, max_tokens, max_duration_seconds, context_mode, context_runs,
+		 secret_name, enabled)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		RETURNING `+agentColumns,
 		userID, agent.Name, agent.Description, agent.Model, agent.BaseURL,
 		agent.SystemPrompt, agent.UserPrompt, tools, agent.MaxSteps, agent.MaxTokens,
-		agent.MaxDurationSeconds, agent.ContextMode, agent.ContextRuns, agent.Enabled)
+		agent.MaxDurationSeconds, agent.ContextMode, agent.ContextRuns,
+		agent.SecretName, agent.Enabled)
 
 	return scanAgent(row)
 }
@@ -86,12 +88,13 @@ func (s *AgentStore) Update(ctx context.Context, userID, id string, agent *model
 		name = $3, description = $4, model = $5, base_url = $6, system_prompt = $7,
 		user_prompt = $8, tools = $9, max_steps = $10, max_tokens = $11,
 		max_duration_seconds = $12, context_mode = $13, context_runs = $14,
-		enabled = $15, updated_at = NOW()
+		secret_name = $15, enabled = $16, updated_at = NOW()
 		WHERE id = $1 AND user_id = $2
 		RETURNING `+agentColumns,
 		id, userID, agent.Name, agent.Description, agent.Model, agent.BaseURL,
 		agent.SystemPrompt, agent.UserPrompt, tools, agent.MaxSteps, agent.MaxTokens,
-		agent.MaxDurationSeconds, agent.ContextMode, agent.ContextRuns, agent.Enabled)
+		agent.MaxDurationSeconds, agent.ContextMode, agent.ContextRuns,
+		agent.SecretName, agent.Enabled)
 
 	return scanAgent(row)
 }
@@ -120,7 +123,7 @@ func scanAgent(row scanner) (*model.Agent, error) {
 	err := row.Scan(&agent.ID, &agent.Name, &agent.Description, &agent.Model,
 		&agent.BaseURL, &agent.SystemPrompt, &agent.UserPrompt, &tools,
 		&agent.MaxSteps, &agent.MaxTokens, &agent.MaxDurationSeconds,
-		&agent.ContextMode, &agent.ContextRuns, &agent.Enabled,
+		&agent.ContextMode, &agent.ContextRuns, &agent.SecretName, &agent.Enabled,
 		&agent.CreatedAt, &agent.UpdatedAt)
 	if err != nil {
 		return nil, translateNoRows(err)

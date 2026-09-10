@@ -9,6 +9,8 @@ import (
 	"github.com/JyotinderSingh/task-queue/pkg/clock"
 	"github.com/JyotinderSingh/task-queue/pkg/common"
 	"github.com/JyotinderSingh/task-queue/pkg/executor"
+	"github.com/JyotinderSingh/task-queue/pkg/secretbox"
+	"github.com/JyotinderSingh/task-queue/pkg/store"
 	"github.com/JyotinderSingh/task-queue/pkg/tools"
 	"github.com/JyotinderSingh/task-queue/pkg/worker"
 )
@@ -33,9 +35,14 @@ func main() {
 
 	registry := tools.BuildRegistry(pool, tools.ConfigFromEnv())
 
-	// The provider credential comes from the environment until stored
-	// credentials land.
-	agentExecutor := executor.New(pool, registry, clock.Real{}, os.Getenv("TASKD_MODEL_API_KEY"))
+	sealer, err := secretbox.NewFromEnv()
+	if err != nil {
+		log.Fatalf("Cannot start: %v", err)
+	}
+	secrets := store.NewSecretStore(pool, sealer)
+
+	agentExecutor := executor.New(pool, secrets, registry, clock.Real{},
+		os.Getenv("TASKD_MODEL_API_KEY"))
 
 	server := worker.NewServerWithExecutor(*serverPort, *coordinatorPort, agentExecutor)
 	if err := server.Start(); err != nil {

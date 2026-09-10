@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"github.com/JyotinderSingh/task-queue/pkg/clock"
 	"github.com/JyotinderSingh/task-queue/pkg/common"
 	"github.com/JyotinderSingh/task-queue/pkg/db"
+	"github.com/JyotinderSingh/task-queue/pkg/model"
+	"github.com/JyotinderSingh/task-queue/pkg/secretbox"
 	"github.com/JyotinderSingh/task-queue/pkg/store"
 	"github.com/JyotinderSingh/task-queue/pkg/tools"
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -27,6 +30,8 @@ type SchedulerServer struct {
 	runs               *store.RunStore
 	steps              *store.StepStore
 	memory             *store.MemoryStore
+	secrets            *store.SecretStore
+	users              *store.UserStore
 	registry           *tools.Registry
 	clock              clock.Clock
 	ctx                context.Context
@@ -68,6 +73,28 @@ func (s *SchedulerServer) Start() error {
 	s.runs = store.NewRunStore(s.dbPool)
 	s.steps = store.NewStepStore(s.dbPool)
 	s.memory = store.NewMemoryStore(s.dbPool)
+	s.users = store.NewUserStore(s.dbPool)
+
+	sealer, err := secretbox.NewFromEnv()
+	if err != nil {
+		return err
+	}
+	s.secrets = store.NewSecretStore(s.dbPool, sealer)
+
+	// An installation is closed from its first boot rather than after a setup
+	// step the operator might never reach.
+	if password := os.Getenv("TASKD_PASSWORD"); password != "" {
+		if err := s.users.EnsurePassword(s.ctx, model.OwnerUserID, password); err != nil {
+			return err
+		}
+	}
+	hasPassword, err := s.users.HasPassword(s.ctx, model.OwnerUserID)
+	if err != nil {
+		return err
+	}
+	if !hasPassword {
+		return fmt.Errorf("no password is set: start once with TASKD_PASSWORD to set one")
+	}
 	s.registry = tools.BuildRegistry(s.dbPool, tools.ConfigFromEnv())
 
 	// A per-server mux rather than the default one, so that more than one
@@ -76,10 +103,12 @@ func (s *SchedulerServer) Start() error {
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	s.registerAgentRoutes(mux)
 	s.registerScheduleRoutes(mux)
+	s.registerAuthRoutes(mux)
+	s.registerSecretRoutes(mux)
 
 	s.httpServer = &http.Server{
 		Addr:    s.serverPort,
-		Handler: mux,
+		Handler: s.requireSession(mux),
 	}
 
 	log.Printf("Starting scheduler server on %s\n", s.serverPort)

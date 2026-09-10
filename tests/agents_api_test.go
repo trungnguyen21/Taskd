@@ -30,6 +30,9 @@ func apiRequest(t *testing.T, method, path string, body interface{}) (int, []byt
 		t.Fatalf("Failed to build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if cluster.Session != nil {
+		req.AddCookie(cluster.Session)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
