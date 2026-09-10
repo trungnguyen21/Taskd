@@ -49,6 +49,7 @@ services:
       TASKD_SECRET_KEY: ${TASKD_SECRET_KEY}
     ports:
       - "8080:8080"
+      - "8090:8090"
     depends_on:
       - postgres
 

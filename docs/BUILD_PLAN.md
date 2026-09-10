@@ -28,7 +28,7 @@ implementation order and progress against it.
       Run output inbox, Telegram chunking, consecutive-failure alerting.
 - [ ] **8. Dashboard**
       Five screens, dark-only, Helvetica, flat colours, served by the API service.
-- [ ] **9. Operations**
+- [x] **9. Operations**
       Health endpoints, graceful shutdown, embedded tzdata, k8s manifests.
 
 ## Notes

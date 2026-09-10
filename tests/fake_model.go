@@ -24,6 +24,9 @@ type fakeModel struct {
 	requests      []llm.Request
 	callCount     int
 	authorization string
+	// beforeRespond runs before each response is written, so a test can hold a
+	// run open while something else happens.
+	beforeRespond func()
 }
 
 func newFakeModel() *fakeModel {
@@ -80,6 +83,10 @@ func (f *fakeModel) calls() int {
 func (f *fakeModel) handle(w http.ResponseWriter, r *http.Request) {
 	var request llm.Request
 	json.NewDecoder(r.Body).Decode(&request)
+
+	if f.beforeRespond != nil {
+		f.beforeRespond()
+	}
 
 	f.mu.Lock()
 	f.requests = append(f.requests, request)

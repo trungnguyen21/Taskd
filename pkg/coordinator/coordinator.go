@@ -20,6 +20,7 @@ import (
 
 	"github.com/JyotinderSingh/task-queue/pkg/clock"
 	"github.com/JyotinderSingh/task-queue/pkg/common"
+	"github.com/JyotinderSingh/task-queue/pkg/health"
 	"github.com/JyotinderSingh/task-queue/pkg/materializer"
 	"github.com/JyotinderSingh/task-queue/pkg/model"
 	"github.com/JyotinderSingh/task-queue/pkg/notifier"
@@ -58,12 +59,16 @@ type CoordinatorServer struct {
 	// scanInterval is configurable so that tests do not wait a real scan
 	// period for every run they trigger.
 	scanInterval time.Duration
-	materializer *materializer.Materializer
-	reaper       *reaper.Reaper
-	notifier     *notifier.Notifier
-	ctx          context.Context    // The root context for all goroutines
-	cancel       context.CancelFunc // Function to cancel the context
-	wg           sync.WaitGroup     // WaitGroup to wait for all goroutines to finish
+	// healthAddress is where liveness and readiness are served. Empty disables
+	// them, which is what tests want when they run several in one process.
+	healthAddress string
+	healthServer  *health.Server
+	materializer  *materializer.Materializer
+	reaper        *reaper.Reaper
+	notifier      *notifier.Notifier
+	ctx           context.Context    // The root context for all goroutines
+	cancel        context.CancelFunc // Function to cancel the context
+	wg            sync.WaitGroup     // WaitGroup to wait for all goroutines to finish
 }
 
 type workerInfo struct {
@@ -92,6 +97,11 @@ func NewServerWithClock(port string, dbConnectionString string, clk clock.Clock)
 		ctx:                ctx,
 		cancel:             cancel,
 	}
+}
+
+// SetHealthAddress sets where probes are served. It must be called before Start.
+func (s *CoordinatorServer) SetHealthAddress(address string) {
+	s.healthAddress = address
 }
 
 // SetScanInterval changes how often the coordinator scans. It exists for tests,
@@ -127,6 +137,16 @@ func (s *CoordinatorServer) Start() error {
 
 	go s.scanDatabase()
 
+	if s.healthAddress != "" {
+		// Readiness is the same question as liveness here: a coordinator that
+		// can reach its database can do its whole job.
+		check := func(ctx context.Context) error { return s.dbPool.Ping(ctx) }
+		s.healthServer, err = health.Serve(s.healthAddress, check, check)
+		if err != nil {
+			return fmt.Errorf("health server start failed: %w", err)
+		}
+	}
+
 	return s.awaitShutdown()
 }
 
@@ -160,6 +180,8 @@ func (s *CoordinatorServer) awaitShutdown() error {
 
 // Stop gracefully shuts down the server.
 func (s *CoordinatorServer) Stop() error {
+	s.healthServer.Stop()
+
 	// Signal all goroutines to stop
 	s.cancel()
 	// Wait for all goroutines to finish

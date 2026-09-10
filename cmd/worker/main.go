@@ -18,6 +18,7 @@ import (
 var (
 	serverPort      = flag.String("worker_port", "", "Port on which the Worker serves requests.")
 	coordinatorPort = flag.String("coordinator", ":8080", "Network address of the Coordinator.")
+	healthPort      = flag.String("health_port", ":8091", "Port on which liveness and readiness are served.")
 )
 
 func main() {
@@ -46,6 +47,7 @@ func main() {
 		os.Getenv("TASKD_MODEL_API_KEY"))
 
 	server := worker.NewServerWithExecutor(*serverPort, *coordinatorPort, agentExecutor)
+	server.SetHealthAddress(*healthPort)
 	if err := server.Start(); err != nil {
 		log.Fatalf("Worker stopped: %v", err)
 	}

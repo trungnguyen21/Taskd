@@ -1,0 +1,67 @@
+# The coordinator materializes schedules into runs, offers them to workers, reaps
+# abandoned runs and reports failing agents.
+#
+# One replica. The worker registry is still held in the coordinator's memory, so
+# two replicas would each see half the fleet. Moving it into Postgres is what
+# makes this scalable.
+apiVersion: v1
+kind: Service
+metadata:
+  name: coordinator
+  namespace: taskd
+spec:
+  selector:
+    app: coordinator
+  ports:
+    - name: grpc
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coordinator
+  namespace: taskd
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: coordinator
+  template:
+    metadata:
+      labels:
+        app: coordinator
+    spec:
+      containers:
+        - name: coordinator
+          image: ghcr.io/trungnguyen21/taskd-coordinator:latest
+          envFrom:
+            - configMapRef:
+                name: taskd-config
+            - secretRef:
+                name: taskd-secrets
+          ports:
+            - name: grpc
+              containerPort: 8080
+            - name: health
+              containerPort: 8090
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi

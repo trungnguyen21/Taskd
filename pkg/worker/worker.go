@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/JyotinderSingh/task-queue/pkg/common"
 	pb "github.com/JyotinderSingh/task-queue/pkg/grpcapi"
+	"github.com/JyotinderSingh/task-queue/pkg/health"
 	"github.com/JyotinderSingh/task-queue/pkg/reaper"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
@@ -71,14 +73,24 @@ type WorkerServer struct {
 	// deploy does not kill work mid-flight.
 	draining     bool
 	drainingLock sync.RWMutex
-	ctx          context.Context    // The root context for all goroutines
-	cancel       context.CancelFunc // Function to cancel the context
-	wg           sync.WaitGroup     // WaitGroup to wait for all goroutines to finish
+	// healthAddress is where liveness and readiness are served. Empty disables
+	// them, which is what tests want when they run several workers in one
+	// process.
+	healthAddress string
+	healthServer  *health.Server
+	ctx           context.Context    // The root context for all goroutines
+	cancel        context.CancelFunc // Function to cancel the context
+	wg            sync.WaitGroup     // WaitGroup to wait for all goroutines to finish
 }
 
 // NewServer creates and returns a new WorkerServer.
 func NewServer(port string, coordinator string) *WorkerServer {
 	return NewServerWithExecutor(port, coordinator, noopExecutor{})
+}
+
+// SetHealthAddress sets where probes are served. It must be called before Start.
+func (w *WorkerServer) SetHealthAddress(address string) {
+	w.healthAddress = address
 }
 
 // NewServerWithExecutor builds a worker around a specific executor.
@@ -109,6 +121,24 @@ func (w *WorkerServer) Start() error {
 
 	if err := w.startGRPCServer(); err != nil {
 		return fmt.Errorf("gRPC server start failed: %w", err)
+	}
+
+	if w.healthAddress != "" {
+		var err error
+		// A draining worker is alive and must not be killed - it is finishing
+		// runs the coordinator believes are its own - but it must not be given
+		// anything new either.
+		w.healthServer, err = health.Serve(w.healthAddress,
+			func(context.Context) error { return nil },
+			func(context.Context) error {
+				if w.isDraining() {
+					return errors.New("draining")
+				}
+				return nil
+			})
+		if err != nil {
+			return fmt.Errorf("health server start failed: %w", err)
+		}
 	}
 
 	return w.awaitShutdown()
@@ -205,6 +235,8 @@ func (w *WorkerServer) Stop() error {
 	w.drainingLock.Lock()
 	w.draining = true
 	w.drainingLock.Unlock()
+
+	w.healthServer.Stop()
 
 	// Signal all goroutines to stop
 	w.cancel()

@@ -56,6 +56,9 @@ type Cluster struct {
 	// ToolConfig is applied when the cluster's workers are built, so a test can
 	// stand up fake Telegram and search endpoints.
 	ToolConfig tools.Config
+	// CoordinatorHealthPort enables the coordinator's probes. Empty leaves them
+	// off, so several clusters can exist in one test process.
+	CoordinatorHealthPort string
 	// DB is exposed so that a test can set up states the API cannot reach,
 	// such as a run abandoned by a worker that died.
 	DB *pgxpool.Pool
@@ -83,6 +86,9 @@ func (c *Cluster) LaunchCluster(schedulerPort string, coordinatorPort string, nu
 	c.coordinator = coordinator.NewServerWithClock(coordinatorPort, c.dbConnectionString(), c.Clock)
 	// Tests should not spend a production scan period waiting for each run.
 	c.coordinator.SetScanInterval(250 * time.Millisecond)
+	if c.CoordinatorHealthPort != "" {
+		c.coordinator.SetHealthAddress(c.CoordinatorHealthPort)
+	}
 	startServer(c.coordinator)
 
 	c.StartAPI(schedulerPort)
