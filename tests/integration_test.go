@@ -2,30 +2,16 @@ package tests
 
 import (
 	"context"
-	"encoding/json"
-	"log"
 	"net/http"
-	"net/url"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/JyotinderSingh/task-queue/pkg/common"
-	pb "github.com/JyotinderSingh/task-queue/pkg/grpcapi"
-	"google.golang.org/grpc"
+	"github.com/JyotinderSingh/task-queue/pkg/reaper"
 )
 
 var cluster Cluster
-var conn *grpc.ClientConn
-var client pb.CoordinatorServiceClient
-
-func setup(numWorkers int8) {
-	cluster = Cluster{}
-	cluster.LaunchCluster(":8081", ":50050", numWorkers)
-
-	conn, client = CreateTestClient("localhost:50050")
-}
 
 func teardown() {
 	cluster.StopCluster()
@@ -36,142 +22,185 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-func TestE2ESuccess(t *testing.T) {
-	setup(2)
+// getRun reads one run through the API the dashboard uses.
+func getRun(t *testing.T, runID string) map[string]interface{} {
+	t.Helper()
+	status, body := apiRequest(t, http.MethodGet, "/api/runs/"+runID, nil)
+	if status != http.StatusOK {
+		t.Fatalf("Expected 200 fetching run %s, got %d: %s", runID, status, body)
+	}
+	return decodeAgent(t, body)
+}
+
+func triggerRun(t *testing.T, agentID string) string {
+	t.Helper()
+	status, body := apiRequest(t, http.MethodPost, "/api/agents/"+agentID+"/runs", nil)
+	if status != http.StatusCreated {
+		t.Fatalf("Expected 201 triggering a run, got %d: %s", status, body)
+	}
+	return decodeAgent(t, body)["id"].(string)
+}
+
+func waitForRunStatus(t *testing.T, runID, want string) map[string]interface{} {
+	t.Helper()
+	var last map[string]interface{}
+	err := WaitForCondition(func() bool {
+		last = getRun(t, runID)
+		return last["status"] == want
+	}, 30*time.Second, 250*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Run %s never reached %q; last status was %v", runID, want, last["status"])
+	}
+	return last
+}
+
+// A run reaches a worker, executes and reports back, with the whole journey
+// visible through the API.
+func TestRunIsDispatchedExecutedAndReported(t *testing.T) {
+	cluster = Cluster{}
+	cluster.LaunchCluster(apiPort, ":50050", 2)
 	defer teardown()
 
-	// Send POST request
-	postData := map[string]interface{}{
-		"command":      "yoooo",
-		"scheduled_at": "2023-12-24T22:34:00+05:30",
+	agentID := createAgent(t, "Dispatched")
+	runID := triggerRun(t, agentID)
+
+	run := waitForRunStatus(t, runID, "succeeded")
+
+	if run["picked_at"] == nil {
+		t.Error("Expected the run to record when the coordinator picked it up")
 	}
-	postDataBytes, _ := json.Marshal(postData)
-	resp, err := http.Post("http://localhost:8081/schedule", "application/json", strings.NewReader(string(postDataBytes)))
-	if err != nil {
-		t.Fatalf("Failed to send POST request: %v", err)
+	if run["started_at"] == nil {
+		t.Error("Expected the run to record when the worker started it")
 	}
-	defer resp.Body.Close()
-
-	// Parse response JSON
-	var postResponse map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&postResponse)
-	taskID := postResponse["task_id"].(string)
-
-	// Wait for the response to contain the keys "picked_at", "started_at", and "completed_at"
-	err = WaitForCondition(func() bool {
-		getURL := "http://localhost:8081/status?task_id=" + url.QueryEscape(taskID)
-		resp, err := http.Get(getURL)
-		if err != nil {
-			log.Fatalf("Failed to send GET request: %v", err)
-		}
-		defer resp.Body.Close()
-
-		// Parse response JSON
-		var getResponse map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&getResponse)
-
-		// Check if the response contains the keys "picked_at", "started_at", and "completed_at"
-		_, pickedAtExists := getResponse["picked_at"]
-		_, startedAtExists := getResponse["started_at"]
-		_, completedAtExists := getResponse["completed_at"]
-		return pickedAtExists && startedAtExists && completedAtExists
-	}, 20*time.Second, 1*time.Second)
-
-	if err != nil {
-		t.Fatalf("Response did not contain the keys 'picked_at', 'started_at', and 'completed_at': %v", err)
+	if run["finished_at"] == nil {
+		t.Error("Expected the run to record when it finished")
 	}
 }
 
-func TestWorkersNotAvailable(t *testing.T) {
-	setup(2)
+// Runs are spread over the pool, and all of them complete.
+func TestRunsAreDistributedAcrossWorkers(t *testing.T) {
+	cluster = Cluster{}
+	cluster.LaunchCluster(apiPort, ":50050", 3)
 	defer teardown()
+
+	agentID := createAgent(t, "Busy")
+
+	runIDs := make([]string, 0, 6)
+	for i := 0; i < 6; i++ {
+		runIDs = append(runIDs, triggerRun(t, agentID))
+	}
+
+	for _, runID := range runIDs {
+		waitForRunStatus(t, runID, "succeeded")
+	}
+}
+
+// With no worker to take it, a run waits rather than being marked as picked up
+// and then dropped.
+func TestRunStaysPendingWhileNoWorkersAreAvailable(t *testing.T) {
+	cluster = Cluster{}
+	cluster.LaunchCluster(apiPort, ":50050", 1)
+	defer teardown()
+
+	agentID := createAgent(t, "Unserviced")
 
 	for _, worker := range cluster.workers {
-		worker.Stop()
+		if err := worker.Stop(); err != nil {
+			t.Fatalf("Failed to stop worker: %v", err)
+		}
+	}
+	// Wait for the coordinator to notice the worker is gone.
+	if err := WaitForCondition(func() bool {
+		cluster.coordinator.WorkerPoolKeysMutex.RLock()
+		defer cluster.coordinator.WorkerPoolKeysMutex.RUnlock()
+		return len(cluster.coordinator.WorkerPoolKeys) == 0
+	}, 30*time.Second, common.DefaultHeartbeat); err != nil {
+		t.Fatalf("Coordinator did not release the stopped worker: %v", err)
 	}
 
-	err := WaitForCondition(func() bool {
-		_, err := client.SubmitTask(context.Background(), &pb.ClientTaskRequest{Data: "test"})
-		return err != nil && err.Error() == "rpc error: code = Unknown desc = no workers available"
-	}, 20*time.Second, common.DefaultHeartbeat)
+	runID := triggerRun(t, agentID)
 
-	if err != nil {
-		t.Fatalf("Coordinator did not clean up the workers within SLO. Error: %s", err.Error())
+	// Give the coordinator several scans to prove it is not dispatching.
+	time.Sleep(3 * time.Second)
+	if status := getRun(t, runID)["status"]; status != "pending" {
+		t.Fatalf("Expected the run to remain pending with no workers, got %v", status)
 	}
 }
 
-func TestCoordinatorFailoverForInactiveWorkers(t *testing.T) {
-	setup(2)
+// A worker that stops renewing its lease loses the run, which is failed rather
+// than left running forever. Inserting the abandoned run directly stands in for
+// the worker dying: on Kubernetes that is a rolling deploy, not an exception.
+func TestRunWithAnExpiredLeaseIsFailed(t *testing.T) {
+	cluster = Cluster{Clock: clockAt(time.Now())}
+	cluster.LaunchAPI(apiPort)
 	defer teardown()
 
-	// Stop one worker in the cluster.
-	cluster.workers[0].Stop()
+	runID := triggerRun(t, createAgent(t, "Abandoned"))
 
-	err := WaitForCondition(func() bool {
-		cluster.coordinator.WorkerPoolMutex.Lock()
-		numWorkers := len(cluster.coordinator.WorkerPool)
-		cluster.coordinator.WorkerPoolMutex.Unlock()
-		return numWorkers == 1
-	}, 20*time.Second, common.DefaultHeartbeat)
+	abandonRun(t, runID, cluster.Clock.Now().Add(-time.Minute))
 
+	reaped, err := cluster.Reaper.RunOnce(context.Background())
 	if err != nil {
-		log.Fatalf("Coordinator did not clean up inactive workers.")
+		t.Fatalf("Reaping failed: %v", err)
+	}
+	if reaped != 1 {
+		t.Fatalf("Expected one run to be reaped, got %d", reaped)
 	}
 
-	for i := 0; i < 4; i++ {
-		_, err := client.SubmitTask(context.Background(), &pb.ClientTaskRequest{Data: "test"})
-		if err != nil {
-			t.Fatalf("Failed to submit task: %v", err)
-		}
+	run := getRun(t, runID)
+	if run["status"] != "failed" {
+		t.Fatalf("Expected the abandoned run to be failed, got %v", run["status"])
 	}
-
-	err = WaitForCondition(func() bool {
-		worker := cluster.workers[1]
-		worker.ReceivedTasksMutex.Lock()
-		if len(worker.ReceivedTasks) != 4 {
-			worker.ReceivedTasksMutex.Unlock()
-			return false
-		}
-		worker.ReceivedTasksMutex.Unlock()
-
-		return true
-	}, 10*time.Second, 500*time.Millisecond)
-
-	if err != nil {
-		log.Fatalf("Coordinator not routing requests correctly after failover.")
+	if run["error"] == "" {
+		t.Error("Expected the failure to record why the run was abandoned")
+	}
+	if run["finished_at"] == nil {
+		t.Error("Expected the reaped run to record when it ended")
 	}
 }
 
-func TestTaskLoadBalancingOverWorkers(t *testing.T) {
-	setup(4)
+// A run whose lease is still being renewed is left alone.
+func TestRunWithALiveLeaseIsNotReaped(t *testing.T) {
+	cluster = Cluster{Clock: clockAt(time.Now())}
+	cluster.LaunchAPI(apiPort)
 	defer teardown()
 
-	for i := 0; i < 8; i++ {
-		_, err := client.SubmitTask(context.Background(), &pb.ClientTaskRequest{Data: "test"})
-		if err != nil {
-			t.Fatalf("Failed to submit task: %v", err)
-		}
-	}
+	runID := triggerRun(t, createAgent(t, "Healthy"))
 
-	err := WaitForCondition(func() bool {
-		for _, worker := range cluster.workers {
-			worker.ReceivedTasksMutex.Lock()
-			if len(worker.ReceivedTasks) != 2 {
-				worker.ReceivedTasksMutex.Unlock()
-				return false
-			}
-			worker.ReceivedTasksMutex.Unlock()
-		}
-		return true
-	}, 5*time.Second, 500*time.Millisecond)
+	abandonRun(t, runID, cluster.Clock.Now().Add(reaper.LeaseTTL))
 
+	reaped, err := cluster.Reaper.RunOnce(context.Background())
 	if err != nil {
-		for idx, worker := range cluster.workers {
-			worker.ReceivedTasksMutex.Lock()
-			log.Printf("Worker %d has %d tasks in its log", idx, len(worker.ReceivedTasks))
-
-			worker.ReceivedTasksMutex.Unlock()
-		}
-		t.Fatalf("Coordinator is not using round-robin to execute tasks over worker pool.")
+		t.Fatalf("Reaping failed: %v", err)
 	}
+	if reaped != 0 {
+		t.Fatalf("Expected a live lease to survive reaping, got %d reaped", reaped)
+	}
+
+	if status := getRun(t, runID)["status"]; status != "running" {
+		t.Fatalf("Expected the run to still be running, got %v", status)
+	}
+}
+
+// The coordinator forgets workers that stop sending heartbeats.
+func TestCoordinatorReleasesInactiveWorkers(t *testing.T) {
+	cluster = Cluster{}
+	cluster.LaunchCluster(apiPort, ":50050", 2)
+	defer teardown()
+
+	if err := cluster.workers[0].Stop(); err != nil {
+		t.Fatalf("Failed to stop worker: %v", err)
+	}
+
+	if err := WaitForCondition(func() bool {
+		cluster.coordinator.WorkerPoolKeysMutex.RLock()
+		defer cluster.coordinator.WorkerPoolKeysMutex.RUnlock()
+		return len(cluster.coordinator.WorkerPoolKeys) == 1
+	}, 30*time.Second, common.DefaultHeartbeat); err != nil {
+		t.Fatalf("Coordinator did not release the inactive worker: %v", err)
+	}
+
+	// The surviving worker still serves runs.
+	agentID := createAgent(t, "Survivor")
+	waitForRunStatus(t, triggerRun(t, agentID), "succeeded")
 }

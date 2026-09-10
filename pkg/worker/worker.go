@@ -13,15 +13,45 @@ import (
 
 	"github.com/JyotinderSingh/task-queue/pkg/common"
 	pb "github.com/JyotinderSingh/task-queue/pkg/grpcapi"
+	"github.com/JyotinderSingh/task-queue/pkg/reaper"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 const (
-	taskProcessTime = 5 * time.Second
-	workerPoolSize  = 5 // Number of workers in the pool
+	// workerPoolSize is how many runs one worker executes concurrently.
+	workerPoolSize = 5
+	// runQueueSize bounds what a worker will accept. Past it the worker
+	// declines, so the coordinator routes elsewhere instead of queueing work
+	// behind runs that take minutes.
+	runQueueSize = 5
 )
+
+// Executor performs the work of a run. It is an interface so that the agent
+// loop can be developed and tested apart from the dispatch machinery.
+type Executor interface {
+	Execute(ctx context.Context, runID, agentID string) (Result, error)
+}
+
+// Result is what a completed run reports back.
+type Result struct {
+	Output           string
+	PromptTokens     int
+	CompletionTokens int
+	// BudgetExceeded distinguishes a run stopped by its limits from one that
+	// failed, so history can be read without opening every trace.
+	BudgetExceeded bool
+}
+
+// noopExecutor is a placeholder that completes immediately. It exists so the
+// dispatch path is exercisable before the agent loop lands, and is replaced
+// wholesale rather than extended.
+type noopExecutor struct{}
+
+func (noopExecutor) Execute(ctx context.Context, runID, agentID string) (Result, error) {
+	return Result{}, nil
+}
 
 // WorkerServer represents a gRPC server for handling worker tasks.
 type WorkerServer struct {
@@ -34,24 +64,33 @@ type WorkerServer struct {
 	coordinatorConnection    *grpc.ClientConn
 	coordinatorServiceClient pb.CoordinatorServiceClient
 	heartbeatInterval        time.Duration
-	taskQueue                chan *pb.TaskRequest
-	ReceivedTasks            map[string]*pb.TaskRequest
-	ReceivedTasksMutex       sync.Mutex
-	ctx                      context.Context    // The root context for all goroutines
-	cancel                   context.CancelFunc // Function to cancel the context
-	wg                       sync.WaitGroup     // WaitGroup to wait for all goroutines to finish
+	runQueue                 chan *pb.RunRequest
+	executor                 Executor
+	// draining is set when the worker is shutting down. A draining worker
+	// declines new runs while finishing the ones it already has, so a rolling
+	// deploy does not kill work mid-flight.
+	draining     bool
+	drainingLock sync.RWMutex
+	ctx          context.Context    // The root context for all goroutines
+	cancel       context.CancelFunc // Function to cancel the context
+	wg           sync.WaitGroup     // WaitGroup to wait for all goroutines to finish
 }
 
 // NewServer creates and returns a new WorkerServer.
 func NewServer(port string, coordinator string) *WorkerServer {
+	return NewServerWithExecutor(port, coordinator, noopExecutor{})
+}
+
+// NewServerWithExecutor builds a worker around a specific executor.
+func NewServerWithExecutor(port string, coordinator string, executor Executor) *WorkerServer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &WorkerServer{
 		id:                 uuid.New().ID(),
 		serverPort:         port,
 		coordinatorAddress: coordinator,
 		heartbeatInterval:  common.DefaultHeartbeat,
-		taskQueue:          make(chan *pb.TaskRequest, 100), // Buffered channel
-		ReceivedTasks:      make(map[string]*pb.TaskRequest),
+		runQueue:           make(chan *pb.RunRequest, runQueueSize),
+		executor:           executor,
 		ctx:                ctx,
 		cancel:             cancel,
 	}
@@ -162,6 +201,11 @@ func (w *WorkerServer) awaitShutdown() error {
 
 // Stop gracefully shuts down the WorkerServer.
 func (w *WorkerServer) Stop() error {
+	// Decline new work first, so nothing is accepted that will not be run.
+	w.drainingLock.Lock()
+	w.draining = true
+	w.drainingLock.Unlock()
+
 	// Signal all goroutines to stop
 	w.cancel()
 	// Wait for all goroutines to finish
@@ -188,21 +232,36 @@ func (w *WorkerServer) closeGRPCConnection() {
 	}
 }
 
-// SubmitTask handles the submission of a task to the worker server.
-func (w *WorkerServer) SubmitTask(ctx context.Context, req *pb.TaskRequest) (*pb.TaskResponse, error) {
-	log.Printf("Received task: %+v", req)
+// SubmitRun accepts a run if there is room for it.
+//
+// Declining is the backpressure: with runs measured in minutes rather than
+// seconds, accepting unboundedly would strand work behind a queue nobody is
+// watching.
+func (w *WorkerServer) SubmitRun(ctx context.Context, req *pb.RunRequest) (*pb.RunResponse, error) {
+	if w.isDraining() {
+		return &pb.RunResponse{
+			RunId:    req.GetRunId(),
+			Accepted: false,
+			Message:  "worker is shutting down",
+		}, nil
+	}
 
-	w.ReceivedTasksMutex.Lock()
-	w.ReceivedTasks[req.GetTaskId()] = req
-	w.ReceivedTasksMutex.Unlock()
+	select {
+	case w.runQueue <- req:
+		return &pb.RunResponse{RunId: req.GetRunId(), Accepted: true, Message: "accepted"}, nil
+	default:
+		return &pb.RunResponse{
+			RunId:    req.GetRunId(),
+			Accepted: false,
+			Message:  "worker is at capacity",
+		}, nil
+	}
+}
 
-	w.taskQueue <- req
-
-	return &pb.TaskResponse{
-		Message: "Task was submitted",
-		Success: true,
-		TaskId:  req.TaskId,
-	}, nil
+func (w *WorkerServer) isDraining() bool {
+	w.drainingLock.RLock()
+	defer w.drainingLock.RUnlock()
+	return w.draining
 }
 
 // startWorkerPool starts a pool of worker goroutines.
@@ -213,35 +272,105 @@ func (w *WorkerServer) startWorkerPool(numWorkers int) {
 	}
 }
 
-// worker is the function run by each worker goroutine.
+// worker executes runs from the queue.
 func (w *WorkerServer) worker() {
-	defer w.wg.Done() // Signal this worker is done when the function returns.
+	defer w.wg.Done()
 
 	for {
 		select {
-		case task := <-w.taskQueue:
-			go w.updateTaskStatus(task, pb.TaskStatus_STARTED)
-			w.processTask(task)
-			go w.updateTaskStatus(task, pb.TaskStatus_COMPLETE)
+		case run := <-w.runQueue:
+			w.executeRun(run)
 		case <-w.ctx.Done():
-			return
+			// Drain whatever was already accepted before stopping, so a
+			// shutdown does not abandon runs the coordinator believes are ours.
+			for {
+				select {
+				case run := <-w.runQueue:
+					w.executeRun(run)
+				default:
+					return
+				}
+			}
 		}
 	}
 }
 
-// updateTaskStatus updates the status of a task.
-func (w *WorkerServer) updateTaskStatus(task *pb.TaskRequest, status pb.TaskStatus) {
-	w.coordinatorServiceClient.UpdateTaskStatus(context.Background(), &pb.UpdateTaskStatusRequest{
-		TaskId:      task.GetTaskId(),
-		Status:      status,
-		StartedAt:   time.Now().Unix(),
-		CompletedAt: time.Now().Unix(),
+// executeRun runs one agent and reports the outcome.
+//
+// The execution context is deliberately not derived from the worker's own
+// context: a run already accepted is finished even while the worker is
+// shutting down.
+func (w *WorkerServer) executeRun(run *pb.RunRequest) {
+	log.Printf("Starting run %s", run.GetRunId())
+
+	w.reportStatus(&pb.UpdateRunStatusRequest{
+		RunId:  run.GetRunId(),
+		Status: pb.RunStatus_RUNNING,
 	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stopRenewing := w.renewLeasePeriodically(ctx, run.GetRunId())
+	defer stopRenewing()
+
+	result, err := w.executor.Execute(ctx, run.GetRunId(), run.GetAgentId())
+	if err != nil {
+		log.Printf("Run %s failed: %v", run.GetRunId(), err)
+		w.reportStatus(&pb.UpdateRunStatusRequest{
+			RunId:  run.GetRunId(),
+			Status: pb.RunStatus_FAILED,
+			Error:  err.Error(),
+		})
+		return
+	}
+
+	status := pb.RunStatus_SUCCEEDED
+	if result.BudgetExceeded {
+		status = pb.RunStatus_BUDGET_EXCEEDED
+	}
+
+	w.reportStatus(&pb.UpdateRunStatusRequest{
+		RunId:            run.GetRunId(),
+		Status:           status,
+		Output:           result.Output,
+		PromptTokens:     int32(result.PromptTokens),
+		CompletionTokens: int32(result.CompletionTokens),
+	})
+	log.Printf("Completed run %s", run.GetRunId())
 }
 
-// processTask simulates task processing.
-func (w *WorkerServer) processTask(task *pb.TaskRequest) {
-	log.Printf("Processing task: %+v", task)
-	time.Sleep(taskProcessTime)
-	log.Printf("Completed task: %+v", task)
+// renewLeasePeriodically keeps the coordinator's claim on a run alive while it
+// executes, and returns a function that stops the renewals.
+func (w *WorkerServer) renewLeasePeriodically(ctx context.Context, runID string) func() {
+	ctx, cancel := context.WithCancel(ctx)
+
+	go func() {
+		ticker := time.NewTicker(reaper.RenewalInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if _, err := w.coordinatorServiceClient.RenewLease(ctx,
+					&pb.RenewLeaseRequest{RunId: runID}); err != nil {
+					log.Printf("Failed to renew the lease on run %s: %v", runID, err)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return cancel
+}
+
+// reportStatus tells the coordinator what happened to a run.
+func (w *WorkerServer) reportStatus(request *pb.UpdateRunStatusRequest) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if _, err := w.coordinatorServiceClient.UpdateRunStatus(ctx, request); err != nil {
+		log.Printf("Failed to report status for run %s: %v", request.GetRunId(), err)
+	}
 }

@@ -16,18 +16,23 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	pb "github.com/JyotinderSingh/task-queue/pkg/grpcapi"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v4/pgxpool"
 
 	"github.com/JyotinderSingh/task-queue/pkg/clock"
 	"github.com/JyotinderSingh/task-queue/pkg/common"
 	"github.com/JyotinderSingh/task-queue/pkg/materializer"
+	"github.com/JyotinderSingh/task-queue/pkg/model"
+	"github.com/JyotinderSingh/task-queue/pkg/reaper"
 )
 
 const (
 	shutdownTimeout  = 5 * time.Second
 	defaultMaxMisses = 1
 	scanInterval     = 10 * time.Second
+	// dispatchBatchSize bounds how many runs one scan offers to workers. The
+	// scan holds row locks while it talks to workers over the network, so the
+	// batch is kept small enough that the transaction stays short.
+	dispatchBatchSize = 50
 )
 
 type CoordinatorServer struct {
@@ -46,6 +51,7 @@ type CoordinatorServer struct {
 	dbPool              *pgxpool.Pool
 	clock               clock.Clock
 	materializer        *materializer.Materializer
+	reaper              *reaper.Reaper
 	ctx                 context.Context    // The root context for all goroutines
 	cancel              context.CancelFunc // Function to cancel the context
 	wg                  sync.WaitGroup     // WaitGroup to wait for all goroutines to finish
@@ -92,6 +98,7 @@ func (s *CoordinatorServer) Start() error {
 		return err
 	}
 	s.materializer = materializer.New(s.dbPool, s.clock)
+	s.reaper = reaper.New(s.dbPool, s.clock)
 
 	go s.scanDatabase()
 
@@ -153,53 +160,54 @@ func (s *CoordinatorServer) Stop() error {
 	return nil
 }
 
-func (s *CoordinatorServer) SubmitTask(ctx context.Context, in *pb.ClientTaskRequest) (*pb.ClientTaskResponse, error) {
-	data := in.GetData()
-	taskId := uuid.New().String()
-	task := &pb.TaskRequest{
-		TaskId: taskId,
-		Data:   data,
+// UpdateRunStatus records what a worker reports about a run. Statuses the
+// platform owns - missed, cancelled - are never set from here.
+func (s *CoordinatorServer) UpdateRunStatus(ctx context.Context, req *pb.UpdateRunStatusRequest) (*pb.UpdateRunStatusResponse, error) {
+	now := s.clock.Now()
+
+	switch req.GetStatus() {
+	case pb.RunStatus_RUNNING:
+		_, err := s.dbPool.Exec(ctx, `UPDATE runs SET status = $2, started_at = $3
+			WHERE id = $1`, req.GetRunId(), model.RunRunning, now)
+		if err != nil {
+			return nil, err
+		}
+
+	case pb.RunStatus_SUCCEEDED, pb.RunStatus_FAILED, pb.RunStatus_BUDGET_EXCEEDED:
+		status := model.RunSucceeded
+		if req.GetStatus() == pb.RunStatus_FAILED {
+			status = model.RunFailed
+		}
+		if req.GetStatus() == pb.RunStatus_BUDGET_EXCEEDED {
+			status = model.RunBudgetExceeded
+		}
+
+		_, err := s.dbPool.Exec(ctx, `UPDATE runs
+			SET status = $2, finished_at = $3, output = $4, error = $5,
+				prompt_tokens = $6, completion_tokens = $7, lease_expires_at = NULL
+			WHERE id = $1`,
+			req.GetRunId(), status, now, req.GetOutput(), req.GetError(),
+			req.GetPromptTokens(), req.GetCompletionTokens())
+		if err != nil {
+			return nil, err
+		}
+
+	default:
+		return nil, fmt.Errorf("unsupported run status: %v", req.GetStatus())
 	}
 
-	if err := s.submitTaskToWorker(task); err != nil {
-		return nil, err
-	}
-
-	return &pb.ClientTaskResponse{
-		Message: "Task submitted successfully",
-		TaskId:  taskId,
-	}, nil
+	return &pb.UpdateRunStatusResponse{Success: true}, nil
 }
 
-func (s *CoordinatorServer) UpdateTaskStatus(ctx context.Context, req *pb.UpdateTaskStatusRequest) (*pb.UpdateTaskStatusResponse, error) {
-	status := req.GetStatus()
-	taskId := req.GetTaskId()
-	var timestamp time.Time
-	var column string
-
-	switch status {
-	case pb.TaskStatus_STARTED:
-		timestamp = time.Unix(req.GetStartedAt(), 0)
-		column = "started_at"
-	case pb.TaskStatus_COMPLETE:
-		timestamp = time.Unix(req.GetCompletedAt(), 0)
-		column = "completed_at"
-	case pb.TaskStatus_FAILED:
-		timestamp = time.Unix(req.GetFailedAt(), 0)
-		column = "failed_at"
-	default:
-		log.Println("Invalid Status in UpdateStatusRequest")
-		return nil, errors.ErrUnsupported
-	}
-
-	sqlStatement := fmt.Sprintf("UPDATE tasks SET %s = $1 WHERE id = $2", column)
-	_, err := s.dbPool.Exec(ctx, sqlStatement, timestamp, taskId)
+// RenewLease extends a worker's claim on a run it is still executing.
+func (s *CoordinatorServer) RenewLease(ctx context.Context, req *pb.RenewLeaseRequest) (*pb.RenewLeaseResponse, error) {
+	tag, err := s.dbPool.Exec(ctx, `UPDATE runs SET lease_expires_at = $2
+		WHERE id = $1 AND status = $3`,
+		req.GetRunId(), s.clock.Now().Add(reaper.LeaseTTL), model.RunRunning)
 	if err != nil {
-		log.Printf("Could not update task status for task %s: %+v", taskId, err)
 		return nil, err
 	}
-
-	return &pb.UpdateTaskStatusResponse{Success: true}, nil
+	return &pb.RenewLeaseResponse{Success: tag.RowsAffected() == 1}, nil
 }
 
 func (s *CoordinatorServer) getNextWorker() *workerInfo {
@@ -214,16 +222,6 @@ func (s *CoordinatorServer) getNextWorker() *workerInfo {
 	worker := s.WorkerPool[s.WorkerPoolKeys[s.roundRobinIndex%uint32(workerCount)]]
 	s.roundRobinIndex++
 	return worker
-}
-
-func (s *CoordinatorServer) submitTaskToWorker(task *pb.TaskRequest) error {
-	worker := s.getNextWorker()
-	if worker == nil {
-		return errors.New("no workers available")
-	}
-
-	_, err := worker.workerServiceClient.SubmitTask(context.Background(), task)
-	return err
 }
 
 func (s *CoordinatorServer) SendHeartbeat(ctx context.Context, in *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
@@ -272,8 +270,7 @@ func (s *CoordinatorServer) scanDatabase() {
 		case <-ticker.C:
 			// Schedules become runs before runs are dispatched, so a schedule
 			// due this tick is picked up on the same tick.
-			go s.materializeSchedules()
-			go s.executeAllScheduledTasks()
+			go s.tick()
 		case <-s.ctx.Done():
 			log.Println("Shutting down database scanner.")
 			return
@@ -281,54 +278,66 @@ func (s *CoordinatorServer) scanDatabase() {
 	}
 }
 
-func (s *CoordinatorServer) executeAllScheduledTasks() {
+// dispatchPendingRuns offers due runs to workers.
+//
+// A run stays pending until a worker accepts it. That is what makes dispatch
+// safe when workers are saturated or absent: the run waits for the next scan
+// instead of being marked as picked up and then dropped.
+func (s *CoordinatorServer) dispatchPendingRuns() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+
+	now := s.clock.Now()
 
 	tx, err := s.dbPool.Begin(ctx)
 	if err != nil {
 		log.Printf("Unable to start transaction: %v\n", err)
 		return
 	}
+	defer tx.Rollback(ctx)
 
-	defer func() {
-		if err := tx.Rollback(ctx); err != nil && err.Error() != "tx is closed" {
-			log.Printf("ERROR: %#v", err)
-			log.Printf("Failed to rollback transaction: %v\n", err)
-		}
-	}()
-
-	rows, err := tx.Query(ctx, `SELECT id, command FROM tasks WHERE scheduled_at < (NOW() + INTERVAL '30 seconds') AND picked_at IS NULL ORDER BY scheduled_at FOR UPDATE SKIP LOCKED`)
+	rows, err := tx.Query(ctx, `SELECT id, agent_id FROM runs
+		WHERE status = $1 AND scheduled_for <= $2
+		ORDER BY scheduled_for
+		FOR UPDATE SKIP LOCKED
+		LIMIT $3`, model.RunPending, now, dispatchBatchSize)
 	if err != nil {
-		log.Printf("Error executing query: %v\n", err)
+		log.Printf("Error querying pending runs: %v\n", err)
 		return
 	}
-	defer rows.Close()
 
-	var tasks []*pb.TaskRequest
+	var pending []*pb.RunRequest
 	for rows.Next() {
-		var id, command string
-		if err := rows.Scan(&id, &command); err != nil {
+		var runID, agentID string
+		if err := rows.Scan(&runID, &agentID); err != nil {
 			log.Printf("Failed to scan row: %v\n", err)
 			continue
 		}
-
-		tasks = append(tasks, &pb.TaskRequest{TaskId: id, Data: command})
+		pending = append(pending, &pb.RunRequest{RunId: runID, AgentId: agentID})
 	}
-
+	rows.Close()
 	if err := rows.Err(); err != nil {
 		log.Printf("Error iterating rows: %v\n", err)
 		return
 	}
 
-	for _, task := range tasks {
-		if err := s.submitTaskToWorker(task); err != nil {
-			log.Printf("Failed to submit task %s: %v\n", task.GetTaskId(), err)
-			continue
+	for _, run := range pending {
+		accepted, err := s.offerRunToWorker(ctx, run)
+		if err != nil {
+			log.Printf("Failed to offer run %s: %v\n", run.GetRunId(), err)
+			break
+		}
+		if !accepted {
+			// Every worker is saturated. Leaving the rest pending is the
+			// backpressure: they are offered again on the next scan.
+			break
 		}
 
-		if _, err := tx.Exec(ctx, `UPDATE tasks SET picked_at = NOW() WHERE id = $1`, task.GetTaskId()); err != nil {
-			log.Printf("Failed to update task %s: %v\n", task.GetTaskId(), err)
+		if _, err := tx.Exec(ctx, `UPDATE runs
+			SET status = $2, picked_at = $3, lease_expires_at = $4
+			WHERE id = $1`,
+			run.GetRunId(), model.RunRunning, now, now.Add(reaper.LeaseTTL)); err != nil {
+			log.Printf("Failed to mark run %s as running: %v\n", run.GetRunId(), err)
 			continue
 		}
 	}
@@ -336,6 +345,36 @@ func (s *CoordinatorServer) executeAllScheduledTasks() {
 	if err := tx.Commit(ctx); err != nil {
 		log.Printf("Failed to commit transaction: %v\n", err)
 	}
+}
+
+// offerRunToWorker tries each worker once, so that one saturated worker does not
+// hold up a run another worker could take.
+func (s *CoordinatorServer) offerRunToWorker(ctx context.Context, run *pb.RunRequest) (bool, error) {
+	s.WorkerPoolKeysMutex.RLock()
+	workerCount := len(s.WorkerPoolKeys)
+	s.WorkerPoolKeysMutex.RUnlock()
+
+	if workerCount == 0 {
+		return false, errors.New("no workers available")
+	}
+
+	for attempt := 0; attempt < workerCount; attempt++ {
+		worker := s.getNextWorker()
+		if worker == nil {
+			return false, errors.New("no workers available")
+		}
+
+		response, err := worker.workerServiceClient.SubmitRun(ctx, run)
+		if err != nil {
+			log.Printf("Worker at %s refused run %s: %v", worker.address, run.GetRunId(), err)
+			continue
+		}
+		if response.GetAccepted() {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 func (s *CoordinatorServer) manageWorkerPool() {
@@ -381,6 +420,14 @@ func (s *CoordinatorServer) removeInactiveWorkers() {
 	}
 }
 
+// tick runs the coordinator's periodic work: schedules become runs, due runs are
+// offered to workers, and runs whose worker went away are failed.
+func (s *CoordinatorServer) tick() {
+	s.materializeSchedules()
+	s.dispatchPendingRuns()
+	s.reapExpiredRuns()
+}
+
 // materializeSchedules expands due schedules into runs.
 func (s *CoordinatorServer) materializeSchedules() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -393,5 +440,20 @@ func (s *CoordinatorServer) materializeSchedules() {
 	}
 	if created > 0 {
 		log.Printf("Materialized %d run(s) from schedules", created)
+	}
+}
+
+// reapExpiredRuns fails runs whose worker stopped renewing their lease.
+func (s *CoordinatorServer) reapExpiredRuns() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	reaped, err := s.reaper.RunOnce(ctx)
+	if err != nil {
+		log.Printf("Failed to reap expired runs: %v", err)
+		return
+	}
+	if reaped > 0 {
+		log.Printf("Failed %d run(s) whose worker stopped reporting", reaped)
 	}
 }

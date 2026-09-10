@@ -4,48 +4,43 @@ package grpcapi;
 
 option go_package = "github.com/JyotinderSingh/task-queue/pkg/grpcapi";
 
-enum TaskStatus {
-  QUEUED = 0;
-  STARTED = 1;
-  COMPLETE = 2;
+// The states a worker can report a run into. Terminal states other than these
+// (missed, cancelled) are set by the platform, never by a worker.
+enum RunStatus {
+  RUN_STATUS_UNSPECIFIED = 0;
+  RUNNING = 1;
+  SUCCEEDED = 2;
   FAILED = 3;
+  BUDGET_EXCEEDED = 4;
 }
 
 // The worker service definition.
 service WorkerService {
-  // Sends a task to the worker
-  rpc SubmitTask (TaskRequest) returns (TaskResponse) {}
+  // Offers a run to a worker. A worker that is saturated declines it, so the
+  // coordinator can route elsewhere rather than stranding the run.
+  rpc SubmitRun (RunRequest) returns (RunResponse) {}
 }
 
-// The request message containing the task data.
-message TaskRequest {
-  string task_id = 1;
-  string data = 2;
+// Dispatch carries a run identifier rather than an opaque command string: the
+// worker reads everything else it needs from the database.
+message RunRequest {
+  string run_id = 1;
+  string agent_id = 2;
 }
 
-// The response message containing the task result.
-message TaskResponse {
-  string task_id = 1;
-  string message = 2;
-  bool success = 3;
+message RunResponse {
+  string run_id = 1;
+  bool accepted = 2;
+  string message = 3;
 }
 
 service CoordinatorService {
-  // Sends a task request to the coordinator.
-  rpc SubmitTask (ClientTaskRequest) returns (ClientTaskResponse) {}
-  // Sends a heartbeat to the server
+  // Sends a heartbeat to the coordinator.
   rpc SendHeartbeat (HeartbeatRequest) returns (HeartbeatResponse) {}
-  // Updates a Task Status
-  rpc UpdateTaskStatus (UpdateTaskStatusRequest) returns (UpdateTaskStatusResponse){}
-}
-
-message ClientTaskRequest {
-  string data = 1;
-}
-
-message ClientTaskResponse {
-  string message = 2;
-  string task_id = 3;
+  // Reports the outcome of a run.
+  rpc UpdateRunStatus (UpdateRunStatusRequest) returns (UpdateRunStatusResponse) {}
+  // Extends the lease on a run that is still executing.
+  rpc RenewLease (RenewLeaseRequest) returns (RenewLeaseResponse) {}
 }
 
 message HeartbeatRequest {
@@ -57,14 +52,23 @@ message HeartbeatResponse {
   bool acknowledged = 1;
 }
 
-message UpdateTaskStatusRequest {
-  string task_id = 1;
-  TaskStatus status = 2;
-  int64 started_at = 3;
-  int64 completed_at = 4;
-  int64 failed_at = 5;
+message UpdateRunStatusRequest {
+  string run_id = 1;
+  RunStatus status = 2;
+  string output = 3;
+  string error = 4;
+  int32 prompt_tokens = 5;
+  int32 completion_tokens = 6;
 }
 
-message UpdateTaskStatusResponse {
+message UpdateRunStatusResponse {
+  bool success = 1;
+}
+
+message RenewLeaseRequest {
+  string run_id = 1;
+}
+
+message RenewLeaseResponse {
   bool success = 1;
 }

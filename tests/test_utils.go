@@ -5,20 +5,19 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v4/pgxpool"
 
 	"github.com/JyotinderSingh/task-queue/pkg/clock"
 	"github.com/JyotinderSingh/task-queue/pkg/coordinator"
-	pb "github.com/JyotinderSingh/task-queue/pkg/grpcapi"
 	"github.com/JyotinderSingh/task-queue/pkg/materializer"
+	"github.com/JyotinderSingh/task-queue/pkg/reaper"
 	"github.com/JyotinderSingh/task-queue/pkg/scheduler"
 	"github.com/JyotinderSingh/task-queue/pkg/worker"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 const (
@@ -37,6 +36,10 @@ type Cluster struct {
 	databasePort       string
 	Clock              *clock.Fake
 	Materializer       *materializer.Materializer
+	Reaper             *reaper.Reaper
+	// DB is exposed so that a test can set up states the API cannot reach,
+	// such as a run abandoned by a worker that died.
+	DB *pgxpool.Pool
 }
 
 func (c *Cluster) LaunchCluster(schedulerPort string, coordinatorPort string, numWorkers int8) {
@@ -45,12 +48,15 @@ func (c *Cluster) LaunchCluster(schedulerPort string, coordinatorPort string, nu
 		log.Fatalf("Could not launch database container: %+v", err)
 	}
 
+	if c.Clock == nil {
+		c.Clock = clock.NewFake(time.Now())
+	}
+
 	c.coordinatorAddress = "localhost" + coordinatorPort
-	c.coordinator = coordinator.NewServer(coordinatorPort, c.dbConnectionString())
+	c.coordinator = coordinator.NewServerWithClock(coordinatorPort, c.dbConnectionString(), c.Clock)
 	startServer(c.coordinator)
 
-	c.scheduler = scheduler.NewServer(schedulerPort, c.dbConnectionString())
-	startServer(c.scheduler)
+	c.StartAPI(schedulerPort)
 
 	c.workers = make([]*worker.WorkerServer, numWorkers)
 	for i := 0; i < int(numWorkers); i++ {
@@ -78,6 +84,11 @@ func (c *Cluster) StopCluster() {
 		if err := c.scheduler.Stop(); err != nil {
 			log.Printf("Failed to stop scheduler: %v", err)
 		}
+	}
+
+	if c.DB != nil {
+		c.DB.Close()
+		c.DB = nil
 	}
 
 	if c.database != nil {
@@ -120,11 +131,15 @@ func (c *Cluster) StartAPI(schedulerPort string) {
 		log.Fatalf("API service did not become healthy: %v", err)
 	}
 
-	pool, err := pgxpool.Connect(context.Background(), c.dbConnectionString())
-	if err != nil {
-		log.Fatalf("Could not connect to the test database: %v", err)
+	if c.DB == nil {
+		pool, err := pgxpool.Connect(context.Background(), c.dbConnectionString())
+		if err != nil {
+			log.Fatalf("Could not connect to the test database: %v", err)
+		}
+		c.DB = pool
 	}
-	c.Materializer = materializer.New(pool, c.Clock)
+	c.Materializer = materializer.New(c.DB, c.Clock)
+	c.Reaper = reaper.New(c.DB, c.Clock)
 }
 
 // StopAPI stops the API service, leaving the database running.
@@ -173,7 +188,7 @@ func (c *Cluster) createDatabase() error {
 
 	// Define the container request using your custom image
 	req := testcontainers.ContainerRequest{
-		Image:        "scheduler-postgres", // Use your custom image
+		Image:        "postgres:16.1",
 		ExposedPorts: []string{"5432/tcp"},
 		Env: map[string]string{
 			"POSTGRES_PASSWORD": postgresPassword,
@@ -203,14 +218,6 @@ func (c *Cluster) createDatabase() error {
 	return nil
 }
 
-func CreateTestClient(coordinatorAddress string) (*grpc.ClientConn, pb.CoordinatorServiceClient) {
-	conn, err := grpc.Dial(coordinatorAddress, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
-	if err != nil {
-		log.Fatal("Could not create test connection to coordinator")
-	}
-	return conn, pb.NewCoordinatorServiceClient(conn)
-}
-
 func WaitForCondition(condition func() bool, timeout time.Duration, retryInterval time.Duration) error {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -233,4 +240,18 @@ func WaitForCondition(condition func() bool, timeout time.Duration, retryInterva
 // clockAt builds a fake clock for a cluster that is about to be launched.
 func clockAt(t time.Time) *clock.Fake {
 	return clock.NewFake(t)
+}
+
+// abandonRun puts a run into the state a worker leaves behind when it claims a
+// run and then dies: still running, with a lease that nothing is renewing.
+func abandonRun(t *testing.T, runID string, leaseExpiresAt time.Time) {
+	t.Helper()
+
+	_, err := cluster.DB.Exec(context.Background(),
+		`UPDATE runs SET status = 'running', picked_at = $2, started_at = $2,
+			lease_expires_at = $3 WHERE id = $1`,
+		runID, cluster.Clock.Now(), leaseExpiresAt)
+	if err != nil {
+		t.Fatalf("Failed to abandon run %s: %v", runID, err)
+	}
 }

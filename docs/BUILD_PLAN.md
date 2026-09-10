@@ -11,7 +11,7 @@ implementation order and progress against it.
 - [x] **2. Schedules + materializer**
       `schedules` and `runs` tables, cron + IANA timezone, injectable clock,
       forward-only fire-time rule, DST behaviour, missed-run recording.
-- [ ] **3. Run dispatch + lease + reaper**
+- [x] **3. Run dispatch + lease + reaper**
       Coordinator dispatches runs (not command strings), worker leases,
       reaper fails expired runs, worker backpressure.
 - [ ] **4. Executor**

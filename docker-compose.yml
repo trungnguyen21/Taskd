@@ -1,9 +1,9 @@
 version: "3"
 services:
   postgres:
-    build:
-      context: .
-      dockerfile: postgres-dockerfile
+    # The schema is owned by the application's migrations, which run on startup,
+    # so the stock image is all that is needed here.
+    image: postgres:16.1
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
