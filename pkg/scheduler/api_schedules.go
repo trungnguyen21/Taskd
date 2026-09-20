@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/JyotinderSingh/task-queue/pkg/model"
-	"github.com/JyotinderSingh/task-queue/pkg/schedule"
+	"github.com/trungnguyen21/Taskd/pkg/model"
+	"github.com/trungnguyen21/Taskd/pkg/schedule"
 )
 
 // defaultRunListLimit bounds the run history a single request returns.

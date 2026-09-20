@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/JyotinderSingh/task-queue/pkg/model"
+	"github.com/trungnguyen21/Taskd/pkg/model"
 )
 
 // inboxLimit bounds how much history one request returns.

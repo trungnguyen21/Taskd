@@ -11,8 +11,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/JyotinderSingh/task-queue/pkg/clock"
-	"github.com/JyotinderSingh/task-queue/pkg/model"
+	"github.com/trungnguyen21/Taskd/pkg/clock"
+	"github.com/trungnguyen21/Taskd/pkg/model"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 

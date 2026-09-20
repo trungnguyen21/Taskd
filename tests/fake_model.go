@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"sync"
 
-	"github.com/JyotinderSingh/task-queue/pkg/llm"
+	"github.com/trungnguyen21/Taskd/pkg/llm"
 )
 
 // fakeModel is an OpenAI-compatible endpoint that returns scripted responses.

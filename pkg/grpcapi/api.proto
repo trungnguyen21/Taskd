@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package grpcapi;
 
-option go_package = "github.com/JyotinderSingh/task-queue/pkg/grpcapi";
+option go_package = "github.com/trungnguyen21/Taskd/pkg/grpcapi";
 
 // The states a worker can report a run into. Terminal states other than these
 // (missed, cancelled) are set by the platform, never by a worker.

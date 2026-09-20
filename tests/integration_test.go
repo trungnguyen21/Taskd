@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JyotinderSingh/task-queue/pkg/common"
-	"github.com/JyotinderSingh/task-queue/pkg/reaper"
+	"github.com/trungnguyen21/Taskd/pkg/common"
+	"github.com/trungnguyen21/Taskd/pkg/reaper"
 )
 
 var cluster Cluster

@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/JyotinderSingh/task-queue/pkg/store"
-	"github.com/JyotinderSingh/task-queue/pkg/tools"
+	"github.com/trungnguyen21/Taskd/pkg/store"
+	"github.com/trungnguyen21/Taskd/pkg/tools"
 )
 
 // recorder captures what a tool sent to an external service.

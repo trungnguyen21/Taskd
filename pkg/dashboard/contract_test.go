@@ -7,8 +7,8 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/JyotinderSingh/task-queue/pkg/model"
-	"github.com/JyotinderSingh/task-queue/pkg/store"
+	"github.com/trungnguyen21/Taskd/pkg/model"
+	"github.com/trungnguyen21/Taskd/pkg/store"
 )
 
 // TestContractMatchesGoStructs pins the browser/API boundary.

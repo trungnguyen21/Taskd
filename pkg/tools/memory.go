@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/JyotinderSingh/task-queue/pkg/store"
+	"github.com/trungnguyen21/Taskd/pkg/store"
 )
 
 // MemoryWrite lets an agent record something for its later runs.

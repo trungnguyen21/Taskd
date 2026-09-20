@@ -3,7 +3,7 @@ package tools
 import (
 	"os"
 
-	"github.com/JyotinderSingh/task-queue/pkg/store"
+	"github.com/trungnguyen21/Taskd/pkg/store"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 

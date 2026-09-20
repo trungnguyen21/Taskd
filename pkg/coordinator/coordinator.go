@@ -15,18 +15,18 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	pb "github.com/JyotinderSingh/task-queue/pkg/grpcapi"
+	pb "github.com/trungnguyen21/Taskd/pkg/grpcapi"
 	"github.com/jackc/pgx/v4/pgxpool"
 
-	"github.com/JyotinderSingh/task-queue/pkg/clock"
-	"github.com/JyotinderSingh/task-queue/pkg/common"
-	"github.com/JyotinderSingh/task-queue/pkg/health"
-	"github.com/JyotinderSingh/task-queue/pkg/materializer"
-	"github.com/JyotinderSingh/task-queue/pkg/model"
-	"github.com/JyotinderSingh/task-queue/pkg/notifier"
-	"github.com/JyotinderSingh/task-queue/pkg/reaper"
-	"github.com/JyotinderSingh/task-queue/pkg/secretbox"
-	"github.com/JyotinderSingh/task-queue/pkg/store"
+	"github.com/trungnguyen21/Taskd/pkg/clock"
+	"github.com/trungnguyen21/Taskd/pkg/common"
+	"github.com/trungnguyen21/Taskd/pkg/health"
+	"github.com/trungnguyen21/Taskd/pkg/materializer"
+	"github.com/trungnguyen21/Taskd/pkg/model"
+	"github.com/trungnguyen21/Taskd/pkg/notifier"
+	"github.com/trungnguyen21/Taskd/pkg/reaper"
+	"github.com/trungnguyen21/Taskd/pkg/secretbox"
+	"github.com/trungnguyen21/Taskd/pkg/store"
 )
 
 const (

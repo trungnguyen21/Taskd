@@ -6,13 +6,13 @@ import (
 	"log"
 	"os"
 
-	"github.com/JyotinderSingh/task-queue/pkg/clock"
-	"github.com/JyotinderSingh/task-queue/pkg/common"
-	"github.com/JyotinderSingh/task-queue/pkg/executor"
-	"github.com/JyotinderSingh/task-queue/pkg/secretbox"
-	"github.com/JyotinderSingh/task-queue/pkg/store"
-	"github.com/JyotinderSingh/task-queue/pkg/tools"
-	"github.com/JyotinderSingh/task-queue/pkg/worker"
+	"github.com/trungnguyen21/Taskd/pkg/clock"
+	"github.com/trungnguyen21/Taskd/pkg/common"
+	"github.com/trungnguyen21/Taskd/pkg/executor"
+	"github.com/trungnguyen21/Taskd/pkg/secretbox"
+	"github.com/trungnguyen21/Taskd/pkg/store"
+	"github.com/trungnguyen21/Taskd/pkg/tools"
+	"github.com/trungnguyen21/Taskd/pkg/worker"
 )
 
 var (

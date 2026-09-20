@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 
-	"github.com/JyotinderSingh/task-queue/pkg/model"
+	"github.com/trungnguyen21/Taskd/pkg/model"
 )
 
 // AgentOverview is one row of the dashboard's home screen: the agent, the

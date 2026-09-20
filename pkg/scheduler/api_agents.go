@@ -9,10 +9,10 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/JyotinderSingh/task-queue/pkg/llm"
-	"github.com/JyotinderSingh/task-queue/pkg/model"
-	"github.com/JyotinderSingh/task-queue/pkg/store"
-	"github.com/JyotinderSingh/task-queue/pkg/tools"
+	"github.com/trungnguyen21/Taskd/pkg/llm"
+	"github.com/trungnguyen21/Taskd/pkg/model"
+	"github.com/trungnguyen21/Taskd/pkg/store"
+	"github.com/trungnguyen21/Taskd/pkg/tools"
 )
 
 // registerAgentRoutes wires the dashboard-facing agent endpoints. These are

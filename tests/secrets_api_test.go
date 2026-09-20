@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JyotinderSingh/task-queue/pkg/store"
+	"github.com/trungnguyen21/Taskd/pkg/store"
 )
 
 func listSecrets(t *testing.T) []store.Secret {

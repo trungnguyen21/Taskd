@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JyotinderSingh/task-queue/pkg/notifier"
-	"github.com/JyotinderSingh/task-queue/pkg/store"
-	"github.com/JyotinderSingh/task-queue/pkg/tools"
+	"github.com/trungnguyen21/Taskd/pkg/notifier"
+	"github.com/trungnguyen21/Taskd/pkg/store"
+	"github.com/trungnguyen21/Taskd/pkg/tools"
 )
 
 type inbox struct {

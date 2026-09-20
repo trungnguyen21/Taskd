@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v4/pgxpool"
-	"github.com/JyotinderSingh/task-queue/pkg/model"
+	"github.com/trungnguyen21/Taskd/pkg/model"
 )
 
 // TelegramTokenSecret is the reserved credential name holding the bot token.

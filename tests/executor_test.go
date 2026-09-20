@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JyotinderSingh/task-queue/pkg/store"
+	"github.com/trungnguyen21/Taskd/pkg/store"
 )
 
 // agentUsing builds an agent pointed at the fake model endpoint.

@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/JyotinderSingh/task-queue/pkg/secretbox"
+	"github.com/trungnguyen21/Taskd/pkg/secretbox"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 

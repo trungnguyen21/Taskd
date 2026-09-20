@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/JyotinderSingh/task-queue/pkg/llm"
+	"github.com/trungnguyen21/Taskd/pkg/llm"
 )
 
 // Env is what a tool is allowed to know about the run invoking it.
