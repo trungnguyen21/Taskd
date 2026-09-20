@@ -1,9 +1,9 @@
 version: "3"
 services:
   postgres:
-    build:
-      context: .
-      dockerfile: postgres-dockerfile
+    # The schema is owned by the application's migrations, which run on startup,
+    # so the stock image is all that is needed here.
+    image: postgres:16.1
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -22,6 +22,14 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_HOST: postgres
+      # The API service builds the same catalogue so the dashboard shows what
+      # this installation can actually offer.
+      TASKD_ALLOW_PRIVATE_FETCH: ${TASKD_ALLOW_PRIVATE_FETCH:-false}
+      TASKD_SEARCH_API_KEY: ${TASKD_SEARCH_API_KEY:-}
+      # Seals stored credentials. Generate with: openssl rand -base64 32
+      TASKD_SECRET_KEY: ${TASKD_SECRET_KEY}
+      # Sets the dashboard password on first start.
+      TASKD_PASSWORD: ${TASKD_PASSWORD}
     ports:
       - "8081:8081"
     depends_on:
@@ -36,8 +44,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_HOST: postgres
+      # The coordinator reports agents that have stopped working, so it needs
+      # to unseal the notification credential.
+      TASKD_SECRET_KEY: ${TASKD_SECRET_KEY}
     ports:
       - "8080:8080"
+      - "8090:8090"
     depends_on:
       - postgres
 
@@ -47,5 +59,20 @@ services:
       dockerfile: worker-dockerfile
     environment:
       WORKER_ADDRESS: worker
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: postgres
+      # The provider credential used for agent runs.
+      TASKD_MODEL_API_KEY: ${TASKD_MODEL_API_KEY:-}
+      # Lets agents fetch addresses on the local network. Off by default: a tool
+      # that fetches arbitrary URLs from inside the deployment is otherwise an
+      # SSRF engine pointed at your own network.
+      TASKD_ALLOW_PRIVATE_FETCH: ${TASKD_ALLOW_PRIVATE_FETCH:-false}
+      # Tools whose credentials are unset are not offered at all.
+      TASKD_SEARCH_API_KEY: ${TASKD_SEARCH_API_KEY:-}
+      # Workers unseal the stored credential at the start of each run.
+      TASKD_SECRET_KEY: ${TASKD_SECRET_KEY}
     depends_on:
+      - postgres
       - coordinator

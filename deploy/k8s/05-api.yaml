@@ -1,0 +1,58 @@
+# The API service serves the dashboard and its REST API.
+apiVersion: v1
+kind: Service
+metadata:
+  name: taskd-api
+  namespace: taskd
+spec:
+  selector:
+    app: taskd-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8081
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: taskd-api
+  namespace: taskd
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: taskd-api
+  template:
+    metadata:
+      labels:
+        app: taskd-api
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/trungnguyen21/taskd-api:latest
+          envFrom:
+            - configMapRef:
+                name: taskd-config
+            - secretRef:
+                name: taskd-secrets
+          ports:
+            - name: http
+              containerPort: 8081
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi

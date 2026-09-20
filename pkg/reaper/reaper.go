@@ -1,0 +1,71 @@
+// Package reaper fails runs whose worker stopped reporting.
+//
+// On Kubernetes a worker dying mid-run is routine rather than exceptional:
+// rolling deploys, node scale-down and evictions all do it. Without this, such a
+// run sits in "running" forever and the dashboard lies about it - and because
+// these agents run unattended and their whole output is a message, a run stuck
+// silently is indistinguishable from one nobody read.
+package reaper
+
+import (
+	"context"
+	"time"
+
+	"github.com/trungnguyen21/Taskd/pkg/clock"
+	"github.com/trungnguyen21/Taskd/pkg/model"
+	"github.com/jackc/pgx/v4/pgxpool"
+)
+
+// LeaseTTL is how long a claim on a run survives without renewal. It is
+// comfortably longer than the renewal interval so that a slow network does not
+// cost a worker its run.
+const LeaseTTL = 60 * time.Second
+
+// RenewalInterval is how often a worker executing a run extends its lease.
+const RenewalInterval = 15 * time.Second
+
+// lostWorkerMessage is recorded as the run's error so the failure reads as an
+// infrastructure event rather than an agent problem.
+const lostWorkerMessage = "worker stopped reporting; the run was abandoned"
+
+// Reaper fails runs whose lease has expired.
+type Reaper struct {
+	pool  *pgxpool.Pool
+	clock clock.Clock
+}
+
+func New(pool *pgxpool.Pool, clk clock.Clock) *Reaper {
+	return &Reaper{pool: pool, clock: clk}
+}
+
+// RunOnce fails every run whose lease has expired, and reports how many.
+func (r *Reaper) RunOnce(ctx context.Context) (int, error) {
+	now := r.clock.Now()
+
+	// The agents whose runs are being failed have their failure count bumped in
+	// the same statement, so a worker that keeps dying eventually surfaces as a
+	// broken agent rather than as silence.
+	rows, err := r.pool.Query(ctx, `WITH reaped AS (
+			UPDATE runs SET status = $1, error = $2, finished_at = $3
+			WHERE status = $4 AND lease_expires_at IS NOT NULL AND lease_expires_at < $3
+			RETURNING agent_id
+		), counted AS (
+			UPDATE agents SET consecutive_failures = consecutive_failures + 1
+			WHERE id IN (SELECT agent_id FROM reaped)
+			RETURNING 1
+		)
+		SELECT COUNT(*) FROM reaped`,
+		model.RunFailed, lostWorkerMessage, now, model.RunRunning)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	reaped := 0
+	if rows.Next() {
+		if err := rows.Scan(&reaped); err != nil {
+			return 0, err
+		}
+	}
+	return reaped, rows.Err()
+}

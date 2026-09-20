@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,32 +10,33 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/JyotinderSingh/task-queue/pkg/common"
-	"github.com/jackc/pgx/pgtype"
+	"github.com/trungnguyen21/Taskd/pkg/clock"
+	"github.com/trungnguyen21/Taskd/pkg/common"
+	"github.com/trungnguyen21/Taskd/pkg/dashboard"
+	"github.com/trungnguyen21/Taskd/pkg/db"
+	"github.com/trungnguyen21/Taskd/pkg/model"
+	"github.com/trungnguyen21/Taskd/pkg/secretbox"
+	"github.com/trungnguyen21/Taskd/pkg/store"
+	"github.com/trungnguyen21/Taskd/pkg/tools"
 	"github.com/jackc/pgx/v4/pgxpool"
 )
 
-// CommandRequest represents the structure of the request body
-type CommandRequest struct {
-	Command     string `json:"command"`
-	ScheduledAt string `json:"scheduled_at"` // ISO 8601 format
-}
-
-type Task struct {
-	Id          string
-	Command     string
-	ScheduledAt pgtype.Timestamp
-	PickedAt    pgtype.Timestamp
-	StartedAt   pgtype.Timestamp
-	CompletedAt pgtype.Timestamp
-	FailedAt    pgtype.Timestamp
-}
-
-// SchedulerServer represents an HTTP server that manages tasks.
+// SchedulerServer serves the dashboard-facing REST API.
 type SchedulerServer struct {
 	serverPort         string
 	dbConnectionString string
 	dbPool             *pgxpool.Pool
+	agents             *store.AgentStore
+	schedules          *store.ScheduleStore
+	runs               *store.RunStore
+	steps              *store.StepStore
+	memory             *store.MemoryStore
+	secrets            *store.SecretStore
+	settings           *store.SettingsStore
+	toolConfig         tools.Config
+	users              *store.UserStore
+	registry           *tools.Registry
+	clock              clock.Clock
 	ctx                context.Context
 	cancel             context.CancelFunc
 	httpServer         *http.Server
@@ -44,10 +44,17 @@ type SchedulerServer struct {
 
 // NewServer creates and returns a new SchedulerServer.
 func NewServer(port string, dbConnectionString string) *SchedulerServer {
+	return NewServerWithClock(port, dbConnectionString, clock.Real{})
+}
+
+// NewServerWithClock is used by tests, which drive time by hand because
+// timezone and daylight-saving behaviour cannot be exercised in real time.
+func NewServerWithClock(port string, dbConnectionString string, clk clock.Clock) *SchedulerServer {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &SchedulerServer{
 		serverPort:         port,
 		dbConnectionString: dbConnectionString,
+		clock:              clk,
 		ctx:                ctx,
 		cancel:             cancel,
 	}
@@ -61,11 +68,57 @@ func (s *SchedulerServer) Start() error {
 		return err
 	}
 
-	http.HandleFunc("/schedule", s.handleScheduleTask)
-	http.HandleFunc("/status/", s.handleGetTaskStatus) // Add the new route handler
+	if err := db.Migrate(s.ctx, s.dbPool); err != nil {
+		return err
+	}
+	s.agents = store.NewAgentStore(s.dbPool)
+	s.schedules = store.NewScheduleStore(s.dbPool)
+	s.runs = store.NewRunStore(s.dbPool)
+	s.steps = store.NewStepStore(s.dbPool)
+	s.memory = store.NewMemoryStore(s.dbPool)
+	s.users = store.NewUserStore(s.dbPool)
+
+	sealer, err := secretbox.NewFromEnv()
+	if err != nil {
+		return err
+	}
+	s.secrets = store.NewSecretStore(s.dbPool, sealer)
+	s.settings = store.NewSettingsStore(s.dbPool, s.secrets)
+	s.toolConfig = tools.ConfigFromEnv()
+	s.registry = tools.BuildRegistry(s.dbPool, s.settings, s.toolConfig)
+
+	// An installation is closed from its first boot rather than after a setup
+	// step the operator might never reach.
+	if password := os.Getenv("TASKD_PASSWORD"); password != "" {
+		if err := s.users.EnsurePassword(s.ctx, model.OwnerUserID, password); err != nil {
+			return err
+		}
+	}
+	hasPassword, err := s.users.HasPassword(s.ctx, model.OwnerUserID)
+	if err != nil {
+		return err
+	}
+	if !hasPassword {
+		return fmt.Errorf("no password is set: start once with TASKD_PASSWORD to set one")
+	}
+
+
+	// A per-server mux rather than the default one, so that more than one
+	// server can exist in a process - which the integration tests rely on.
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", s.handleHealth)
+	// The dashboard is served by this process, so one command brings up a
+	// working URL rather than a URL and a second container to point at it.
+	mux.Handle("/", dashboard.Handler())
+	s.registerAgentRoutes(mux)
+	s.registerScheduleRoutes(mux)
+	s.registerAuthRoutes(mux)
+	s.registerSecretRoutes(mux)
+	s.registerInboxRoutes(mux)
 
 	s.httpServer = &http.Server{
-		Addr: s.serverPort,
+		Addr:    s.serverPort,
+		Handler: s.requireSession(mux),
 	}
 
 	log.Printf("Starting scheduler server on %s\n", s.serverPort)
@@ -79,160 +132,6 @@ func (s *SchedulerServer) Start() error {
 
 	// Return awaitShutdown
 	return s.awaitShutdown()
-}
-
-// handleScheduleTask handles POST requests to add new tasks.
-func (s *SchedulerServer) handleScheduleTask(w http.ResponseWriter, r *http.Request) {
-
-	if r.Method != "POST" {
-		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Decode the JSON body
-	var commandReq CommandRequest
-	if err := json.NewDecoder(r.Body).Decode(&commandReq); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	log.Printf("Received schedule request: %+v", commandReq)
-
-	// Parse the scheduled_at time
-	scheduledTime, err := time.Parse(time.RFC3339, commandReq.ScheduledAt)
-	if err != nil {
-		http.Error(w, "Invalid date format. Use ISO 8601 format.", http.StatusBadRequest)
-		return
-	}
-
-	// Convert the scheduled time to Unix timestamp
-	unixTimestamp := time.Unix(scheduledTime.Unix(), 0)
-
-	taskId, err := s.insertTaskIntoDB(context.Background(), Task{Command: commandReq.Command, ScheduledAt: pgtype.Timestamp{Time: unixTimestamp}})
-
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to submit task. Error: %s", err.Error()),
-			http.StatusInternalServerError)
-		return
-	}
-
-	// Respond with the parsed data (for demonstration purposes)
-	response := struct {
-		Command     string `json:"command"`
-		ScheduledAt int64  `json:"scheduled_at"`
-		TaskID      string `json:"task_id"`
-	}{
-		Command:     commandReq.Command,
-		ScheduledAt: unixTimestamp.Unix(),
-		TaskID:      taskId,
-	}
-
-	jsonResponse, err := json.Marshal(response)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(jsonResponse)
-}
-
-func (s *SchedulerServer) handleGetTaskStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		http.Error(w, "Only GET method is allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Get the task ID from the query parameters
-	taskID := r.URL.Query().Get("task_id")
-
-	// Check if the task ID is empty
-	if taskID == "" {
-		http.Error(w, "Task ID is required", http.StatusBadRequest)
-		return
-	}
-
-	// Query the database to get the task status
-	var task Task
-	err := s.dbPool.QueryRow(context.Background(), "SELECT * FROM tasks WHERE id = $1", taskID).Scan(&task.Id, &task.Command, &task.ScheduledAt, &task.PickedAt, &task.StartedAt, &task.CompletedAt, &task.FailedAt)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to get task status. Error: %s", err.Error()), http.StatusInternalServerError)
-		return
-	}
-
-	// Prepare the response JSON
-	response := struct {
-		TaskID      string `json:"task_id"`
-		Command     string `json:"command"`
-		ScheduledAt string `json:"scheduled_at,omitempty"`
-		PickedAt    string `json:"picked_at,omitempty"`
-		StartedAt   string `json:"started_at,omitempty"`
-		CompletedAt string `json:"completed_at,omitempty"`
-		FailedAt    string `json:"failed_at,omitempty"`
-	}{
-		TaskID:      task.Id,
-		Command:     task.Command,
-		ScheduledAt: "",
-		PickedAt:    "",
-		StartedAt:   "",
-		CompletedAt: "",
-		FailedAt:    "",
-	}
-
-	// Set the scheduled_at time if non-null.
-	if task.ScheduledAt.Status == 2 {
-		response.ScheduledAt = task.ScheduledAt.Time.String()
-	}
-
-	// Set the picked_at time if non-null.
-	if task.PickedAt.Status == 2 {
-		response.PickedAt = task.PickedAt.Time.String()
-	}
-
-	// Set the started_at time if non-null.
-	if task.StartedAt.Status == 2 {
-		response.StartedAt = task.StartedAt.Time.String()
-	}
-
-	// Set the completed_at time if non-null.
-	if task.CompletedAt.Status == 2 {
-		response.CompletedAt = task.CompletedAt.Time.String()
-	}
-
-	// Set the failed_at time if non-null.
-	if task.FailedAt.Status == 2 {
-		response.FailedAt = task.FailedAt.Time.String()
-	}
-
-	// Convert the response struct to JSON
-	jsonResponse, err := json.Marshal(response)
-	if err != nil {
-		http.Error(w, "Failed to marshal JSON response", http.StatusInternalServerError)
-		return
-	}
-
-	// Set the Content-Type header to application/json
-	w.Header().Set("Content-Type", "application/json")
-
-	// Write the JSON response
-	w.Write(jsonResponse)
-}
-
-// insertTaskIntoDB inserts a new task into the tasks table and returns the autogenerated UUID.
-func (s *SchedulerServer) insertTaskIntoDB(ctx context.Context, task Task) (string, error) {
-	// SQL statement with RETURNING clause
-	sqlStatement := "INSERT INTO tasks (command, scheduled_at) VALUES ($1, $2) RETURNING id"
-
-	var insertedId string
-
-	// Execute the query and scan the returned id into the insertedId variable
-	err := s.dbPool.QueryRow(ctx, sqlStatement, task.Command, task.ScheduledAt.Time).Scan(&insertedId)
-	if err != nil {
-		return "", err
-	}
-
-	// Return the autogenerated UUID
-	return insertedId, nil
 }
 
 func (s *SchedulerServer) awaitShutdown() error {
@@ -253,4 +152,13 @@ func (s *SchedulerServer) Stop() error {
 	}
 	log.Println("Scheduler server and database pool stopped")
 	return nil
+}
+
+// handleHealth reports whether the server can reach its database.
+func (s *SchedulerServer) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if err := s.dbPool.Ping(r.Context()); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

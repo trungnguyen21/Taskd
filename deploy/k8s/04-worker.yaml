@@ -1,0 +1,64 @@
+# Workers execute agent runs.
+#
+# The coordinator dials workers directly on their pod IPs, which they report in
+# their heartbeats. A plain Deployment is therefore enough - no headless Service
+# or StatefulSet is needed for addressing.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: taskd
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      # Long enough for a run at the maximum duration budget to finish. A worker
+      # asked to stop declines new runs and completes what it already accepted;
+      # killing it sooner abandons a run the coordinator believes is in flight,
+      # and it then waits out the lease before failing it.
+      terminationGracePeriodSeconds: 660
+      containers:
+        - name: worker
+          image: ghcr.io/trungnguyen21/taskd-worker:latest
+          envFrom:
+            - configMapRef:
+                name: taskd-config
+            - secretRef:
+                name: taskd-secrets
+          env:
+            # Workers report this address to the coordinator, which dials it.
+            - name: WORKER_ADDRESS
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+          ports:
+            - name: grpc
+              containerPort: 8081
+            - name: health
+              containerPort: 8091
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          # Readiness fails while draining, so a stopping worker is not counted
+          # as available even though it is still alive and finishing its work.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
