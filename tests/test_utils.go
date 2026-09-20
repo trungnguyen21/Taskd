@@ -108,12 +108,6 @@ func (c *Cluster) LaunchCluster(schedulerPort string, coordinatorPort string, nu
 
 	registry := tools.BuildRegistry(c.DB, c.Settings, config)
 
-	sealer, err := secretbox.New(testMasterKey)
-	if err != nil {
-		log.Fatalf("Could not build the sealer: %v", err)
-	}
-	secrets := store.NewSecretStore(c.DB, sealer)
-
 	c.workers = make([]*worker.WorkerServer, numWorkers)
 	for i := 0; i < int(numWorkers); i++ {
 		agentExecutor := executor.New(c.DB, secrets, registry, c.Clock, "test-key")
@@ -181,6 +175,7 @@ func (c *Cluster) StartAPI(schedulerPort string) {
 	os.Setenv("TASKD_SECRET_KEY", testMasterKey)
 	os.Setenv("TASKD_PASSWORD", testPassword)
 	os.Setenv("TASKD_TELEGRAM_BASE_URL", c.ToolConfig.TelegramBaseURL)
+	os.Setenv("TASKD_SKIP_VALIDATION", "true")
 
 	c.scheduler = scheduler.NewServerWithClock(schedulerPort, c.dbConnectionString(), c.Clock)
 	startServer(c.scheduler)

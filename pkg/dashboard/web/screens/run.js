@@ -68,7 +68,7 @@ function page(run, steps) {
       : empty("The run has not reached the model yet."),
 
     el("h2", { text: "Steps" }),
-    steps.length === 0 ? empty("No steps recorded yet.") : steps.map(stepRow),
+    steps.length === 0 ? empty("No steps recorded yet.") : steps.slice().reverse().map(stepRow),
 
     el("h2", { text: "Output" }),
     run.output ? el("pre", { text: run.output }) : empty(outputPlaceholder(run.status)),

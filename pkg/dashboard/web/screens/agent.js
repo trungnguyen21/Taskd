@@ -86,6 +86,7 @@ export async function renderAgent(view, agentID) {
     placeholder: "0 7 * * *",
   });
   const timezone = timezonePicker(schedule ? schedule.timezone : null);
+  const scheduleEnabled = el("input", { type: "checkbox", checked: schedule ? schedule.enabled : true });
   const preview = el("div", { class: "hint" });
 
   const refreshPreview = async () => {
@@ -140,7 +141,7 @@ export async function renderAgent(view, agentID) {
         await api.setSchedule(saved.id, {
           cron_expression: expression,
           timezone: timezone.value,
-          enabled: true,
+          enabled: scheduleEnabled.checked,
         });
       } else if (schedule) {
         await api.deleteSchedule(saved.id);
@@ -202,6 +203,12 @@ export async function renderAgent(view, agentID) {
     el("div", { class: "pair" }, [
       field("Cron expression", cron, "Five fields. Leave empty for no schedule."),
       field("Timezone", timezone, "A zone, not an offset, so 7am stays 7am across the year."),
+    ]),
+    el("div", { class: "field" }, [
+      el("label", { class: "check" }, [
+        scheduleEnabled,
+        el("span", { text: "Schedule active — pause this to temporarily stop scheduled runs." }),
+      ]),
     ]),
     el("div", { class: "field" }, preview),
 

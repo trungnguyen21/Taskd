@@ -9,7 +9,11 @@ import { navigate } from "../app.js";
 import { duration, statusTone, statusWord, timestamp, tokens } from "../format.js";
 
 export async function renderRuns(view, agentID) {
-  const [agent, runs] = await Promise.all([api.getAgent(agentID), api.listRuns(agentID)]);
+  const [agent, runs, schedule] = await Promise.all([
+    api.getAgent(agentID), 
+    api.listRuns(agentID),
+    api.getSchedule(agentID).catch(() => null)
+  ]);
   if (!view.live) return;
 
   const message = el("div");
@@ -29,6 +33,26 @@ export async function renderRuns(view, agentID) {
         }
       },
     }),
+    schedule ? el("button", {
+      class: "button",
+      type: "button",
+      text: schedule.enabled ? "Pause" : "Resume",
+      onclick: async (event) => {
+        const btn = event.target;
+        const isPaused = btn.textContent === "Resume";
+        try {
+          await api.setSchedule(agentID, {
+            cron_expression: schedule.cron_expression,
+            timezone: schedule.timezone,
+            enabled: isPaused,
+          });
+          schedule.enabled = isPaused;
+          btn.textContent = isPaused ? "Pause" : "Resume";
+        } catch (error) {
+          replace(message, errorLine(error.message));
+        }
+      },
+    }) : null,
     el("a", { class: "button", href: `#/agents/${agentID}`, text: "Edit agent" }),
   ]);
 

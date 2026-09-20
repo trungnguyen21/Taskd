@@ -165,6 +165,7 @@ const responses = {
       updated_at: "2026-09-10T10:00:00Z",
     },
   ],
+  "/api/settings": { telegram_chat_id: "", telegram_configured: false, failure_alerts_enabled: false, custom_providers: [] },
   "/api/schedules/preview": { fire_times: ["2026-09-11T06:00:00Z"] },
 };
 
@@ -290,7 +291,7 @@ const screens = [
   {
     name: "settings",
     text: await render("screens/settings.js", "renderSettings"),
-    wants: ["Credentials", "Model provider key", "set …3456", "Telegram bot token", "not set", "Tools this installation offers"],
+    wants: ["Model Providers", "Legacy Model Key", "set …3456", "Telegram Notifications", "Telegram Chat ID", "Tools this installation offers"],
   },
 ];
 

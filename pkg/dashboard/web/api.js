@@ -107,4 +107,5 @@ export const api = {
 
   getSettings: () => request("GET", "/api/settings", undefined, "Settings"),
   updateSettings: (settings) => request("PUT", "/api/settings", settings, "Settings"),
+  detectChat: () => request("POST", "/api/telegram/detect-chat", {}, "Settings"),
 };

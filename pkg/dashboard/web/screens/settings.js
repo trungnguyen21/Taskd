@@ -40,19 +40,9 @@ const KNOWN = [
     hint: "Registers the web_search tool. Without it, the tool is not offered at all.",
   },
   {
-    name: "telegram_bot_token",
-    label: "Telegram bot token",
-    hint: "From @BotFather. Registers send_telegram together with the chat id below.",
-  },
-  {
-    name: "telegram_chat_id",
-    label: "Telegram chat id",
-    hint: "Message your bot once, then read the chat id from its getUpdates response.",
-  },
-  {
-    name: "failure_notify_target",
-    label: "Failure notification target",
-    hint: "Where to report an agent that has failed repeatedly.",
+    name: "custom_webhook_url",
+    label: "Custom webhook URL",
+    hint: "Use this to reference a custom webhook in your agent prompts.",
   },
 ];
 
@@ -76,6 +66,9 @@ export async function renderSettings(view) {
 
     el("h2", { text: "Custom Providers" }),
     ...renderCustomProviders(view, settings, stored),
+
+    el("h2", { text: "Telegram Notifications" }),
+    renderTelegramConfig(view, settings, stored),
 
     el("h2", { text: "Other Credentials" }),
     ...KNOWN.map((known) => secretRow(view, known, stored.get(known.name))),
@@ -247,5 +240,58 @@ function addRow(view) {
     ]),
     message,
     el("button", { class: "button primary", type: "button", text: "Add", onclick: add }),
+  ]);
+}
+
+function renderTelegramConfig(view, settings, stored) {
+  const secret = stored.get("telegram_bot_token");
+  const botToken = el("input", { type: "password", placeholder: secret ? `set ${secret.masked_suffix}` : "From @BotFather" });
+  const chatID = el("input", { type: "text", value: settings.telegram_chat_id || "", placeholder: "e.g., 123456789" });
+  const alertsEnabled = el("input", { type: "checkbox", checked: settings.failure_alerts_enabled });
+  const message = el("div");
+
+  const save = async () => {
+    replace(message);
+    try {
+      if (botToken.value.trim()) {
+        await api.putSecret("telegram_bot_token", botToken.value.trim());
+      }
+      await api.updateSettings({
+        ...settings,
+        telegram_chat_id: chatID.value.trim(),
+        failure_alerts_enabled: alertsEnabled.checked,
+      });
+      await renderSettings(view);
+    } catch (error) {
+      replace(message, errorLine(error.message));
+    }
+  };
+
+  const detect = async () => {
+    replace(message, el("span", { text: "Detecting..." }));
+    try {
+      await api.detectChat();
+      await renderSettings(view);
+    } catch (error) {
+      replace(message, errorLine(error.message));
+    }
+  };
+
+  return el("div", { class: "row" }, [
+    el("div", { class: "pair" }, [
+      field("Telegram Bot Token", botToken, "Registers send_telegram together with the chat ID below."),
+      field("Telegram Chat ID", chatID, "Message your bot once, then click Detect to find your chat ID automatically."),
+      el("div", { class: "field" }, [
+        el("label", { class: "check" }, [
+          alertsEnabled,
+          el("span", { text: "Enable failure alerts (notify when an agent fails repeatedly)" })
+        ])
+      ])
+    ]),
+    message,
+    el("div", { style: "display: flex; gap: 8px; margin-top: 10px;" }, [
+      el("button", { class: "button primary", type: "button", text: "Save", onclick: save }),
+      el("button", { class: "button", type: "button", text: "Detect Chat ID", onclick: detect }),
+    ])
   ]);
 }

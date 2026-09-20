@@ -150,9 +150,9 @@ func (s *SchedulerServer) handleListModels(w http.ResponseWriter, r *http.Reques
 		{Name: "Gemini 1.5 Pro (Google)", Model: "gemini-1.5-pro", BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai", SecretName: "google_key"},
 		{Name: "Gemini 1.5 Flash (Google)", Model: "gemini-1.5-flash", BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai", SecretName: "google_key"},
 		{Name: "Gemini 1.0 Pro (Google)", Model: "gemini-1.0-pro", BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai", SecretName: "google_key"},
-		{Name: "Claude 3.5 Sonnet (Anthropic)", Model: "claude-3-5-sonnet-20240620", BaseURL: "https://api.anthropic.com/v1", SecretName: "anthropic_key"},
-		{Name: "Claude 3 Opus (Anthropic)", Model: "claude-3-opus-20240229", BaseURL: "https://api.anthropic.com/v1", SecretName: "anthropic_key"},
-		{Name: "Claude 3 Haiku (Anthropic)", Model: "claude-3-haiku-20240307", BaseURL: "https://api.anthropic.com/v1", SecretName: "anthropic_key"},
+		{Name: "Claude Sonnet 5 (Anthropic)", Model: "claude-sonnet-5", BaseURL: "https://api.anthropic.com/v1", SecretName: "anthropic_key"},
+		{Name: "Claude Opus 5 (Anthropic)", Model: "claude-opus-5", BaseURL: "https://api.anthropic.com/v1", SecretName: "anthropic_key"},
+		{Name: "Claude Haiku 4.5 (Anthropic)", Model: "claude-haiku-4-5", BaseURL: "https://api.anthropic.com/v1", SecretName: "anthropic_key"},
 	}
 
 	settings, err := s.settings.Get(r.Context(), model.OwnerUserID)
@@ -161,8 +161,23 @@ func (s *SchedulerServer) handleListModels(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	secrets, err := s.secrets.List(r.Context(), model.OwnerUserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	
+	secretNames := make(map[string]bool)
+	for _, sec := range secrets {
+		secretNames[sec.Name] = true
+	}
+
 	var results []model.ModelEndpoint
-	results = append(results, predefined...)
+	for _, pre := range predefined {
+		if secretNames[pre.SecretName] {
+			results = append(results, pre)
+		}
+	}
 
 	if settings.CustomProviders != nil {
 		for _, cp := range settings.CustomProviders {
