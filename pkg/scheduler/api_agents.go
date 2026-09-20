@@ -1,11 +1,15 @@
 package scheduler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
 
+	"github.com/JyotinderSingh/task-queue/pkg/llm"
 	"github.com/JyotinderSingh/task-queue/pkg/model"
 	"github.com/JyotinderSingh/task-queue/pkg/store"
 	"github.com/JyotinderSingh/task-queue/pkg/tools"
@@ -21,6 +25,7 @@ func (s *SchedulerServer) registerAgentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PATCH /api/agents/{id}", s.handleUpdateAgent)
 	mux.HandleFunc("DELETE /api/agents/{id}", s.handleDeleteAgent)
 	mux.HandleFunc("GET /api/tools", s.handleListTools)
+	mux.HandleFunc("GET /api/models", s.handleListModels)
 	s.registerMemoryRoutes(mux)
 }
 
@@ -46,6 +51,11 @@ func (s *SchedulerServer) handleCreateAgent(w http.ResponseWriter, r *http.Reque
 
 	agent.ApplyDefaults()
 	if err := agent.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := s.validateAgentModel(r.Context(), agent); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -81,6 +91,11 @@ func (s *SchedulerServer) handleUpdateAgent(w http.ResponseWriter, r *http.Reque
 
 	agent.ApplyDefaults()
 	if err := agent.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := s.validateAgentModel(r.Context(), agent); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -125,6 +140,71 @@ func (s *SchedulerServer) handleListTools(w http.ResponseWriter, r *http.Request
 		summaries = append(summaries, toolSummary{Name: tool.Name(), Description: tool.Description()})
 	}
 	writeJSON(w, http.StatusOK, summaries)
+}
+
+func (s *SchedulerServer) handleListModels(w http.ResponseWriter, r *http.Request) {
+	predefined := []model.ModelEndpoint{
+		{Name: "GPT-4o (OpenAI)", Model: "gpt-4o", BaseURL: "https://api.openai.com/v1", SecretName: "openai_key"},
+		{Name: "GPT-4o Mini (OpenAI)", Model: "gpt-4o-mini", BaseURL: "https://api.openai.com/v1", SecretName: "openai_key"},
+		{Name: "GPT-4 Turbo (OpenAI)", Model: "gpt-4-turbo", BaseURL: "https://api.openai.com/v1", SecretName: "openai_key"},
+		{Name: "Gemini 1.5 Pro (Google)", Model: "gemini-1.5-pro", BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai", SecretName: "google_key"},
+		{Name: "Gemini 1.5 Flash (Google)", Model: "gemini-1.5-flash", BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai", SecretName: "google_key"},
+		{Name: "Gemini 1.0 Pro (Google)", Model: "gemini-1.0-pro", BaseURL: "https://generativelanguage.googleapis.com/v1beta/openai", SecretName: "google_key"},
+		{Name: "Claude 3.5 Sonnet (Anthropic)", Model: "claude-3-5-sonnet-20240620", BaseURL: "https://api.anthropic.com/v1", SecretName: "anthropic_key"},
+		{Name: "Claude 3 Opus (Anthropic)", Model: "claude-3-opus-20240229", BaseURL: "https://api.anthropic.com/v1", SecretName: "anthropic_key"},
+		{Name: "Claude 3 Haiku (Anthropic)", Model: "claude-3-haiku-20240307", BaseURL: "https://api.anthropic.com/v1", SecretName: "anthropic_key"},
+	}
+
+	settings, err := s.settings.Get(r.Context(), model.OwnerUserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	var results []model.ModelEndpoint
+	results = append(results, predefined...)
+
+	if settings.CustomProviders != nil {
+		for _, cp := range settings.CustomProviders {
+			for _, m := range cp.Models {
+				results = append(results, model.ModelEndpoint{
+					Name:       m + " (" + cp.Name + ")",
+					Model:      m,
+					BaseURL:    cp.BaseURL,
+					SecretName: cp.SecretName,
+				})
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, results)
+}
+
+func (s *SchedulerServer) validateAgentModel(ctx context.Context, agent *model.Agent) error {
+	if os.Getenv("TASKD_SKIP_VALIDATION") == "true" {
+		return nil
+	}
+
+	apiKey := ""
+	if agent.SecretName != "" && agent.SecretName != model.DefaultSecretName {
+		val, err := s.secrets.Reveal(ctx, model.OwnerUserID, agent.SecretName)
+		if err != nil {
+			return fmt.Errorf("invalid credential %q: %v", agent.SecretName, err)
+		}
+		apiKey = val
+	} else {
+		apiKey = os.Getenv("TASKD_MODEL_API_KEY")
+	}
+
+	client := llm.New(agent.BaseURL, apiKey)
+	_, err := client.Complete(ctx, llm.Request{
+		Model:    agent.Model,
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "respond with 'ok'"}},
+	})
+	if err != nil {
+		return fmt.Errorf("provider validation failed: %v", err)
+	}
+	return nil
 }
 
 // registerMemoryRoutes exposes what agents have remembered, so a user can see

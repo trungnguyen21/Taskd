@@ -103,9 +103,29 @@
       "content",
       "created_at"
     ],
-    "Secret": ["id", "name", "masked_suffix", "created_at", "updated_at"]
+    "Secret": ["id", "name", "masked_suffix", "created_at", "updated_at"],
+    "ModelEndpoint": [
+      "name",
+      "model",
+      "base_url",
+      "secret_name"
+    ],
+    "CustomProvider": [
+      "name",
+      "base_url",
+      "secret_name",
+      "models"
+    ],
+    "Settings": [
+      "telegram_chat_id",
+      "telegram_configured",
+      "failure_alerts_enabled",
+      "custom_providers"
+    ]
   },
   "endpoints": {
+    "GET /api/settings": "Settings",
+    "PUT /api/settings": "Settings",
     "GET /api/agents": "AgentOverview[]",
     "POST /api/agents": "Agent",
     "GET /api/agents/{id}": "Agent",
@@ -125,6 +145,7 @@
     "PUT /api/secrets/{name}": "Secret",
     "DELETE /api/secrets/{name}": "",
     "GET /api/tools": "",
+    "GET /api/models": "ModelEndpoint[]",
     "GET /api/session": "",
     "POST /api/login": "",
     "POST /api/logout": ""

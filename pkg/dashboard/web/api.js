@@ -100,7 +100,11 @@ export const api = {
   deleteMemory: (id) => request("DELETE", `/api/memory/${id}`),
 
   listTools: () => request("GET", "/api/tools"),
+  listModels: () => request("GET", "/api/models", undefined, "ModelEndpoint[]"),
   listSecrets: () => request("GET", "/api/secrets", undefined, "Secret[]"),
   putSecret: (name, value) => request("PUT", `/api/secrets/${name}`, { value }, "Secret"),
   deleteSecret: (name) => request("DELETE", `/api/secrets/${name}`),
+
+  getSettings: () => request("GET", "/api/settings", undefined, "Settings"),
+  updateSettings: (settings) => request("PUT", "/api/settings", settings, "Settings"),
 };

@@ -31,10 +31,11 @@ const BLANK = {
 export async function renderAgent(view, agentID) {
   const creating = !agentID;
 
-  const [agent, tools, schedule] = await Promise.all([
+  const [agent, tools, schedule, models] = await Promise.all([
     creating ? Promise.resolve({ ...BLANK }) : api.getAgent(agentID),
     api.listTools().catch(() => []),
     creating ? Promise.resolve(null) : api.getSchedule(agentID).catch(() => null),
+    api.listModels().catch(() => []),
   ]);
   if (!view.live) return;
 
@@ -108,18 +109,20 @@ export async function renderAgent(view, agentID) {
     event.preventDefault();
     replace(message);
 
+    const selectedModel = models.find(m => m.name === modelSelect.value);
+
     const payload = {
       name: inputs.name.value.trim(),
       description: inputs.description.value.trim(),
-      model: inputs.model.value.trim(),
-      base_url: inputs.base_url.value.trim(),
+      model: selectedModel ? selectedModel.model : agent.model,
+      base_url: selectedModel ? selectedModel.base_url : agent.base_url,
       system_prompt: inputs.system_prompt.value,
       user_prompt: inputs.user_prompt.value,
       tools: grants.selected(),
       max_steps: Number(inputs.max_steps.value),
       max_tokens: Number(inputs.max_tokens.value),
       max_duration_seconds: Number(inputs.max_duration_seconds.value),
-      secret_name: inputs.secret_name.value.trim() || "default",
+      secret_name: selectedModel ? selectedModel.secret_name : agent.secret_name,
       context_mode: contextMode.value,
       context_runs: Number(contextRuns.value),
       enabled: enabled.checked,
@@ -153,21 +156,40 @@ export async function renderAgent(view, agentID) {
 
   const grants = toolGrants(tools, agent.tools || []);
 
+  const modelSelect = el("select");
+
+  let matched = false;
+  for (const m of models) {
+    const opt = el("option", { value: m.name, text: m.name });
+    modelSelect.append(opt);
+    if (m.model === agent.model && m.base_url === agent.base_url) {
+      opt.selected = true;
+      matched = true;
+    }
+  }
+
+  if (!matched && !creating) {
+    const fallbackName = agent.model + " (Legacy/Unlisted)";
+    const opt = el("option", { value: fallbackName, text: fallbackName });
+    opt.selected = true;
+    modelSelect.append(opt);
+    models.push({
+      name: fallbackName,
+      model: agent.model,
+      base_url: agent.base_url,
+      secret_name: agent.secret_name
+    });
+  } else if (creating && models.length > 0) {
+    modelSelect.value = models[0].name;
+  }
+
   const form = el("form", { onsubmit: save }, [
     el("h2", { text: "Identity" }),
     field("Name", text("name", { required: true, placeholder: "Morning brief" })),
     field("Description", text("description"), "For your own reference. The model never sees it."),
 
     el("h2", { text: "Model" }),
-    el("div", { class: "pair" }, [
-      field("Model", text("model", { required: true, placeholder: "gpt-4o-mini" })),
-      field("Base URL", text("base_url", { placeholder: "https://api.openai.com/v1" })),
-    ]),
-    field(
-      "Credential",
-      text("secret_name"),
-      "Which stored key this agent's model calls use. Keys are managed in Settings.",
-    ),
+    field("Model", modelSelect, "Select a model. Configure API keys and Custom Providers in Settings."),
 
     el("h2", { text: "Prompts" }),
     field("System prompt", area("system_prompt"), "Who the agent is and how it should behave."),

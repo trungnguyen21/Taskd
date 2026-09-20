@@ -154,6 +154,7 @@ const responses = {
       created_at: "2026-09-10T11:00:10Z",
     },
   ],
+  "/api/models": [{ name: "GPT-4o (OpenAI)", model: "gpt-4o", base_url: "https://api.openai.com/v1" }],
   "/api/tools": [{ name: "http_fetch", description: "Fetch a URL." }],
   "/api/secrets": [
     {

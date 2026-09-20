@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/JyotinderSingh/task-queue/pkg/model"
 )
 
 // TelegramTokenSecret is the reserved credential name holding the bot token.
@@ -15,8 +16,9 @@ const TelegramTokenSecret = "telegram_bot_token"
 // Settings is the per-user configuration the dashboard edits.
 type Settings struct {
 	TelegramChatID       string `json:"telegram_chat_id"`
-	TelegramConfigured   bool   `json:"telegram_configured"`
-	FailureAlertsEnabled bool   `json:"failure_alerts_enabled"`
+	TelegramConfigured   bool                   `json:"telegram_configured"`
+	FailureAlertsEnabled bool                   `json:"failure_alerts_enabled"`
+	CustomProviders      []model.CustomProvider `json:"custom_providers"`
 }
 
 // SettingsStore reads and writes per-user configuration.
@@ -34,8 +36,8 @@ func NewSettingsStore(pool *pgxpool.Pool, secrets *SecretStore) *SettingsStore {
 func (s *SettingsStore) Get(ctx context.Context, userID string) (*Settings, error) {
 	var settings Settings
 	err := s.pool.QueryRow(ctx,
-		`SELECT telegram_chat_id, failure_alerts_enabled FROM users WHERE id = $1`, userID).
-		Scan(&settings.TelegramChatID, &settings.FailureAlertsEnabled)
+		`SELECT telegram_chat_id, failure_alerts_enabled, custom_providers FROM users WHERE id = $1`, userID).
+		Scan(&settings.TelegramChatID, &settings.FailureAlertsEnabled, &settings.CustomProviders)
 	if err != nil {
 		return nil, translateNoRows(err)
 	}
@@ -52,8 +54,8 @@ func (s *SettingsStore) Get(ctx context.Context, userID string) (*Settings, erro
 // Update replaces the user's settings.
 func (s *SettingsStore) Update(ctx context.Context, userID string, settings *Settings) (*Settings, error) {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE users SET telegram_chat_id = $2, failure_alerts_enabled = $3 WHERE id = $1`,
-		userID, settings.TelegramChatID, settings.FailureAlertsEnabled)
+		`UPDATE users SET telegram_chat_id = $2, failure_alerts_enabled = $3, custom_providers = $4 WHERE id = $1`,
+		userID, settings.TelegramChatID, settings.FailureAlertsEnabled, settings.CustomProviders)
 	if err != nil {
 		return nil, translateNoRows(err)
 	}

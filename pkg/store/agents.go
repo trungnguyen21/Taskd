@@ -76,6 +76,28 @@ func (s *AgentStore) List(ctx context.Context, userID string) ([]*model.Agent, e
 	return agents, rows.Err()
 }
 
+// ListUniqueEndpoints returns all unique model and base_url combinations the user has saved.
+func (s *AgentStore) ListUniqueEndpoints(ctx context.Context, userID string) ([]model.ModelEndpoint, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT DISTINCT model, base_url FROM agents WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	endpoints := []model.ModelEndpoint{}
+	for rows.Next() {
+		var ep model.ModelEndpoint
+		if err := rows.Scan(&ep.Model, &ep.BaseURL); err != nil {
+			return nil, err
+		}
+		// The predefined ones will filter out matches, so these are all custom
+		ep.Name = fmt.Sprintf("Custom: %s", ep.Model)
+		endpoints = append(endpoints, ep)
+	}
+	return endpoints, rows.Err()
+}
+
 // Update replaces the mutable fields of an existing agent. The change applies to
 // the agent's next run; runs already in flight are unaffected.
 func (s *AgentStore) Update(ctx context.Context, userID, id string, agent *model.Agent) (*model.Agent, error) {

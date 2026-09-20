@@ -80,6 +80,21 @@ type Agent struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+// ModelEndpoint represents a model provider endpoint (predefined or discovered).
+type ModelEndpoint struct {
+	Name       string `json:"name"`
+	Model      string `json:"model"`
+	BaseURL    string `json:"base_url"`
+	SecretName string `json:"secret_name"`
+}
+
+type CustomProvider struct {
+	Name       string   `json:"name"`
+	BaseURL    string   `json:"base_url"`
+	SecretName string   `json:"secret_name"`
+	Models     []string `json:"models"`
+}
+
 // HasTool reports whether the agent was granted the named tool.
 func (a *Agent) HasTool(name string) bool {
 	for _, tool := range a.Tools {
